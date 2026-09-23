@@ -20,7 +20,7 @@ export const MEMORY_IMPACT_REMINDER_CONTEXT = [
 
 export function memorySkillReminderContext(memorySkillInvocation) {
   const invocation = nonEmptyString(memorySkillInvocation) ?? DEFAULT_MEMORY_SKILL_INVOCATION;
-  return `MemoraX Code reminder: proactively invoke ${invocation} whenever coding memory might help, even when uncertain; follow the skill's router to decide whether any memory operation is needed. Also use ${invocation} for global personal memory, and classify the authority before reading or writing.`;
+  return `MemoraX Code reminder: proactively invoke ${invocation} whenever coding memory might help, even when uncertain; follow the skill's router to decide whether any memory operation is needed. Also use ${invocation} for global personal memory, including working rules or preferences the user wants kept, and classify the authority before reading or writing.`;
 }
 
 export function memorySearchGuidanceContext(memorySkillInvocation) {
@@ -42,8 +42,8 @@ export function codingMemoryReminderContext(result, memorySkillInvocation) {
 export function personalMemoryReminderContext(memorySkillInvocation) {
   const invocation = nonEmptyString(memorySkillInvocation) ?? DEFAULT_MEMORY_SKILL_INVOCATION;
   return [
-    `MemoraX Code personal-memory reminder: Use ${invocation} when the user states a durable identity or interaction preference, asks to list or recall stored personal memory, or explicitly asks to save, update, forget, or delete it.`,
-    "Route reusable action sequences and work rules to procedure memory; do not store repository facts, one-off task details, or secrets.",
+    `MemoraX Code personal-memory reminder: Use ${invocation} when the user states a working rule or preference meant to keep applying after the current task, judged by intent rather than by trigger words such as remember, or asks to list, recall, update, forget, or delete personal memory.`,
+    "Route how-to-work rules to procedure memory and communication or presentation preferences to profile memory; do not store repository facts, one-off task details, or secrets.",
   ].join(" ");
 }
 
