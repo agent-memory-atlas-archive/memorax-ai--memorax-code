@@ -85,8 +85,10 @@ the user's own rule or preference, even without words such as "remember" or
 "记住". Finish the current task first and keep memory remarks at the end of
 the answer: when the intent is clear, save it and say so briefly; when
 durability or scope is unclear, ask one short question instead of saving, never
-before or during the task. Deleting saved memory still requires an explicit
-request.
+before or during the task. When a save accompanies another task, write it only
+after every task action, including any command the task still needs to run, has
+finished, and do not mention the planned save in preambles or progress messages.
+Deleting saved memory still requires an explicit request.
 
 ## Natural Final-Answer Mention
 

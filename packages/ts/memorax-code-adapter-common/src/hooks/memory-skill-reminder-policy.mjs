@@ -45,6 +45,7 @@ export function personalMemoryReminderContext(memorySkillInvocation) {
   return [
     `MemoraX Code personal-memory reminder: Use ${invocation} when the user states a working rule or preference meant to keep applying after the current task, judged by intent rather than by trigger words such as remember, or asks to list, recall, update, forget, or delete personal memory.`,
     "Route how-to-work rules to procedure memory and communication or presentation preferences to profile memory; do not store repository facts, one-off task details, or secrets.",
+    "When a save accompanies another task, write it only after every task action has finished, do not mention the planned save in preambles or progress messages, and report it only at the end of the final answer.",
   ].join(" ");
 }
 
