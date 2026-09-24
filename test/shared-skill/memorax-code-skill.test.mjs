@@ -95,6 +95,7 @@ test("memorax-code keeps memory-impact attribution bounded and private", () => {
   assert.doesNotMatch(router, /memorax-impact/);
   assert.match(router, /raw memory text, IDs, scores, query text, private paths, or secrets/);
   assert.match(router, /Do not report active Add, automatic writeback, or Repo Memory build or update/);
+  assert.match(router, /A personal-memory save, update, or deletion made in the current turn is not memory that helped the current turn/);
 });
 
 test("memorax-code retries read-only search once after transport or sandbox failure", () => {

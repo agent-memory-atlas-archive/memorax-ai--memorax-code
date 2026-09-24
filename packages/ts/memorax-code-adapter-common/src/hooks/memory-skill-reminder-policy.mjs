@@ -14,6 +14,7 @@ export const MEMORY_IMPACT_REMINDER_CONTEXT = [
   "Do not repeat the task or result, reproduce the memory, or narrate the full execution steps or reasoning.",
   "Do not report a routine language or tone preference.",
   "Do not report active Add, automatic writeback, or Repo Memory build or update as memory that helped the current turn.",
+  "A personal-memory save, update, or deletion made in the current turn is not memory that helped the current turn.",
   "Do not add a heading, card, label, or colon-led report, and do not open with stock wording such as `MemoraX Code 的 Memory 提示：`, `本轮借助...`, `Memory impact:`, or `The memory said...`.",
   "Use only normal visible prose. Do not include HTML or XML comments, Markdown markers, tags, zero-width text, hidden control text, or metadata.",
 ].join(" ");

@@ -21,6 +21,7 @@ test("memorax-code routes global personal procedure reads and writes", () => {
   assert.match(router, /\$MEMORAX_CODE_HOME\/personal-memory/);
   assert.match(router, /Decide personal-memory writes by intent, not wording/);
   assert.match(router, /even without words such as "remember" or "记住"/);
+  assert.match(router, /Finish the current task first and keep memory remarks at the end of the answer/);
   assert.match(router, /Deleting saved memory still requires an explicit request/);
   assert.doesNotMatch(router, /Procedure Memory writes require an explicit request/);
   assert.match(readReference, /\$MEMORAX_CODE_HOME\/personal-memory\/procedure-memory\//);
@@ -34,8 +35,8 @@ test("memorax-code routes global personal procedure reads and writes", () => {
   assert.match(readReference, /Do not write, normalize, migrate, repair, or delete memory/);
 
   assert.match(writeReference, /Judge the user's intent, not trigger words/);
-  assert.match(writeReference, /save first and then tell the user/);
-  assert.match(writeReference, /ask one short question at the end of the answer/);
+  assert.match(writeReference, /save it and tell the user briefly at the end/);
+  assert.match(writeReference, /ask one short question at the end of the answer, never before or during the task/);
   assert.match(writeReference, /Merge a single rule into the closest existing topic/);
   assert.match(writeReference, /Write `Use when:` narrowly/);
   assert.doesNotMatch(writeReference, /Require the user to explicitly ask/);

@@ -82,6 +82,7 @@ test("active preferences join the first prompt and the first prompt after compac
     assert.match(firstContext, /begin the final answer with one brief opening paragraph/);
     assert.match(firstContext, /successful explicit `memorax-cli search`/);
     assert.match(firstContext, /Do not report active Add, automatic writeback, or Repo Memory build or update/);
+    assert.match(firstContext, /A personal-memory save, update, or deletion made in the current turn is not memory that helped the current turn/);
     assert.doesNotMatch(firstContext, /memorax-impact/);
     for (const index of [1, 2]) assert.equal(outputs[index].stdout, "");
     const laterCadenceContext = reminderContext(outputs[3].stdout);

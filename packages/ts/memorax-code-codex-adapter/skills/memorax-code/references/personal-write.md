@@ -58,10 +58,11 @@ Judge the user's intent, not trigger words. Save without waiting for
 | "这个仓库用 pnpm" | Do not save as personal memory | It is a repository fact |
 | "我觉得 node 读 git 好像更稳" | Ask once | It may be an opinion rather than a rule |
 
-When the intent is clear, save first and then tell the user; do not interrupt
-the current task to ask. When durability or scope is unclear, finish the task
-and ask one short question at the end of the answer. Do not save when any
-condition fails.
+Finish the current task first and keep memory remarks at the end of the answer.
+When the intent is clear, save it and tell the user briefly at the end; do not
+interrupt the current task. When durability or scope is unclear, do not save:
+finish the task and ask one short question at the end of the answer, never
+before or during the task. Do not save when any condition fails.
 
 ## Route The Write
 
