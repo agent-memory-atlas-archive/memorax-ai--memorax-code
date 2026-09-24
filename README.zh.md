@@ -221,8 +221,9 @@ Personal Memory 和 Procedure Memory 在用户级目录
 `$MEMORAX_CODE_HOME/personal-memory/`（默认 `~/.memorax-code/personal-memory/`）下：User
 Profile 使用 `user-profile/preferences.md`，每个 Procedure 主题在
 `procedure-memory/` 中单独保存。适用条件可以提到仓库、工具或工作流，但仓库内没有个人记忆层。
-旧 `.repo_memory` 中的个人记忆会被忽略，不会迁移。持久化的 User Profile 偏好可以隐式保存；
-Procedure Memory 只有在用户明确要求时才保存。涉及已有内容时，MemoraX Code 会先比较含义：
+旧 `.repo_memory` 中的个人记忆会被忽略，不会迁移。Agent 按意图而不是措辞决定是否保存：
+你表达了希望在当前任务之后继续生效的做事规则或偏好时，不必说“记住”，Agent 也会保存并告诉你存了什么；
+做事方式的规则存入 Procedure Memory，沟通和结果呈现的偏好存入 User Profile。涉及已有内容时，MemoraX Code 会先比较含义：
 语义相同的请求不重复写入；长期有效的补充或冲突规则会更新匹配项，并彻底移除被替代的文字；
 适用环境失效时先修正范围，只有整条记忆完全过时时才删除。用户明确要求忘记时，只删除点名的偏好、
 流程主题、段落或步骤，其他记忆保持不变。一次性任务指令不会改写已保存的记忆；是否长期有效或目标不清楚时，Agent 会先询问。

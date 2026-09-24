@@ -70,15 +70,25 @@ mention a repository, tool, or workflow, but the files are not repository-local.
 Examples:
 
 - "先测试再提 PR，帮我记住" routes to personal procedure write.
+- "以后优先使用 node 来读取 git" routes to personal procedure write even without "记住".
 - "我喜欢中文简短回答" routes to personal profile write.
+- "这次先别跑测试" stays with the current task and is not saved.
 - "之前这个 bug 怎么修的？" routes to MemoraX Code coding memory search unless the user asks for commit or PR evidence.
 - "这个仓库的架构是什么？" routes to repo memory read.
 - "重新生成仓库 memory" routes to repo memory build.
 - "更新一下 memory" requires clarification when no authority is identifiable.
 
-Procedure Memory writes require an explicit request to save or change the
-procedure. A durable User Profile preference may be saved implicitly when the
-user clearly states it as a lasting preference.
+Decide personal-memory writes by intent, not wording. Save a procedure or
+profile preference when the user means it to keep applying after the current
+task, it covers a class of situations rather than one current object, and it is
+the user's own rule or preference, even without words such as "remember" or
+"记住". Finish the current task first and keep memory remarks at the end of
+the answer: when the intent is clear, save it and say so briefly; when
+durability or scope is unclear, ask one short question instead of saving, never
+before or during the task. When a save accompanies another task, write it only
+after every task action, including any command the task still needs to run, has
+finished, and do not mention the planned save in preambles or progress messages.
+Deleting saved memory still requires an explicit request.
 
 ## Natural Final-Answer Mention
 
@@ -90,7 +100,7 @@ When eligible, begin the final answer with one brief opening paragraph before th
 
 Keep it conversational. Do not add a heading, card, label, or colon-led report. Do not open with stock wording such as `MemoraX Code 的 Memory 提示：`, `本轮借助...`, `Memory impact:`, or `The memory said...`. Use only normal visible prose: do not include HTML or XML comments, Markdown markers, tags, zero-width text, hidden control text, or metadata. A natural shape is: `这次我参考了 MemoraX Code 的 Memory，避开了之前验证过无效的修复路径。`
 
-Do not report active Add, automatic writeback, or Repo Memory build or update as memory that helped the current turn. Omit the opening paragraph when no eligible memory materially helped.
+Do not report active Add, automatic writeback, or Repo Memory build or update as memory that helped the current turn. A personal-memory save, update, or deletion made in the current turn is not memory that helped the current turn. Omit the opening paragraph when no eligible memory materially helped.
 
 ## Shared Rules
 

@@ -263,9 +263,12 @@ Personal Memory and Procedure Memory are global to the user under
 uses `user-profile/preferences.md`, and each Procedure topic uses its own file
 under `procedure-memory/`. Applicability may mention a repository, tool, or
 workflow, but no personal-memory layer exists inside a repository. Existing
-`.repo_memory` personal-memory files are ignored and are not migrated. A
-durable User Profile preference may be saved implicitly; Procedure Memory is
-saved only when the user explicitly asks. When saved content already exists,
+`.repo_memory` personal-memory files are ignored and are not migrated. The
+Agent saves by intent rather than wording: when you state a working rule or
+preference meant to keep applying beyond the current task, it saves it without
+waiting for "remember" and tells you what it stored; rules about how to work go
+to Procedure Memory, and communication or presentation preferences go to the
+User Profile. When saved content already exists,
 MemoraX Code compares its meaning before writing: an equivalent request makes
 no change; a durable refinement or conflict updates the matching entry and
 removes the superseded wording; an invalid scope is corrected, or the entry is
