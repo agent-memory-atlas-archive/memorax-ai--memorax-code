@@ -118,6 +118,7 @@ async function runCase(phase) {
     const interrupted = await deadline(terminal.exited, 15_000, "INTERRUPTED_SETUP_DID_NOT_EXIT");
     check(interrupted.exitCode !== 0 || interrupted.signal > 0, "INTERRUPTED_SETUP_REPORTED_SUCCESS");
     await observe(async () => assertCredentialNotEchoed(terminal.output(), key));
+    disposeTerminal(terminal);
     terminal = undefined;
     await waitFor(() => [...dependencyPids].every((pid) => !alive(pid)), "INTERRUPTED_DEPENDENCY_PROCESS_REMAINS");
     gateEnabled = false;
@@ -138,6 +139,7 @@ async function runCase(phase) {
     check(!terminal.inputRequested, "SAVED_ACCOUNT_RETRY_REQUESTED_INPUT");
     check(retried.exitCode === 0 && !(retried.signal > 0), "SETUP_RETRY_FAILED");
     assertCredentialNotEchoed(terminal.output(), key);
+    disposeTerminal(terminal);
     terminal = undefined;
     result.retryWithoutAccountInput = true;
     await observe(async () => assertProtectedConfiguration(parse(await config()), protectedConfig));
@@ -210,7 +212,7 @@ function startTerminal(harness, args, { cancelCase, onStage = () => {} }) {
   terminal.exited = new Promise((done) => child.onExit(done));
   child.onData((chunk) => {
     output += chunk;
-    if (output.length > 2 * 1024 * 1024) { terminal.inputRequested = true; child.kill(); return; }
+    if (output.length > 2 * 1024 * 1024) { terminal.inputRequested = true; disposeTerminal(terminal); return; }
     const queries = output.split("\x1b[6n").length - 1;
     while (queriesAnswered < queries && queriesAnswered < 16) { queriesAnswered += 1; child.write("\x1b[1;1R"); }
     const visible = stripVTControlCharacters(output);
@@ -218,7 +220,7 @@ function startTerminal(harness, args, { cancelCase, onStage = () => {} }) {
     const keyPrompt = visible.includes("MemoraX API key:");
     if (!cancelCase && (username || keyPrompt || visible.includes("Preferred language [ZH/en]")
       || visible.includes("Connect MemoraX Code to MemoraX now") || visible.includes("Use the saved connection and memory preferences"))) {
-      terminal.inputRequested = true; child.kill(); return;
+      terminal.inputRequested = true; disposeTerminal(terminal); return;
     }
     if (cancelCase && username && !usernameAnswered) { usernameAnswered = true; child.write("\r"); }
     if (cancelCase && keyPrompt && !keySeen) { keySeen = true; onStage("key-prompt"); }
@@ -228,8 +230,20 @@ function startTerminal(harness, args, { cancelCase, onStage = () => {} }) {
 }
 
 async function stopTerminal(terminal, env) {
-  if (alive(terminal.child.pid)) await stopNativeProcessTree({ pid: terminal.child.pid, kill: () => terminal.child.kill() }, env);
-  await deadline(terminal.exited, 15_000, "SETUP_PROCESS_TREE_DID_NOT_EXIT");
+  try {
+    if (alive(terminal.child.pid)) await stopNativeProcessTree({ pid: terminal.child.pid, kill: () => disposeTerminal(terminal) }, env);
+    await deadline(terminal.exited, 15_000, "SETUP_PROCESS_TREE_DID_NOT_EXIT");
+  } finally {
+    disposeTerminal(terminal);
+  }
+}
+function disposeTerminal(terminal) {
+  if (terminal.disposed) return;
+  // An exited Windows shell still owns node-pty ConPTY workers and handles.
+  // OS process-tree termination does not dispose those resources.
+  try { terminal.child.kill(); }
+  catch { throw failure("PTY_RESOURCE_DISPOSE_FAILED"); }
+  terminal.disposed = true;
 }
 function failure(code) { return Object.assign(new Error(code), { testCode: code }); }
 function check(condition, code) { if (!condition) throw failure(code); }
