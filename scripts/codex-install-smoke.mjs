@@ -1,21 +1,24 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { createServer as createTcpServer } from "node:net";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { isDeepStrictEqual, promisify } from "node:util";
+import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
-import { assertBackendReplacement, assertCredentialNotEchoed, assertSetupInputRejection } from "./codex-lifecycle-assertions.mjs";
+import { assertBackendReplacement, assertCredentialNotEchoed, assertSetupInputRejection,
+  snapshotProtectedConfiguration, assertProtectedConfiguration } from "./codex-lifecycle-assertions.mjs";
 
 const execFileAsync = promisify(execFile);
 const pluginName = "memorax-code-codex-adapter";
 const pluginId = `${pluginName}@memorax-code`;
 const otherClients = ["claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor"];
 const fixtureKey = `sk_${"E".repeat(43)}`;
+const fixtureUser = "lifecycle-saved-account";
+const searchFixture = "LIFECYCLE_SAVED_ACCOUNT_SEARCH_RESULT";
 const report = { status: "FAIL", platform: process.platform, arch: process.arch, checks: [] };
 const cleanupCodes = {
   entrypoint_check: "CLEANUP_ENTRYPOINT_CHECK_FAILED",
@@ -30,10 +33,13 @@ const cleanupCodes = {
 let cleanupStage = "entrypoint_check";
 let cleanupTrackedPidIndex;
 let stage = "prerequisites";
-let root, env, workspace, entrypoint, stateHome, codexHome, backendPort, endpoint, registry;
+let root, env, workspace, entrypoint, stateHome, codexHome, backendPort, endpoint, registry, savedEndpoint;
 let resolveInvocation, resolveNpmInvocation;
 let setupStarted = false;
 let requests = 0;
+let allowSearch = false;
+const memoryRequests = [];
+const endpointErrors = [];
 const backendPids = new Set();
 let npmCommand, npmPrefix, candidateTarball, ptyPackage, ptyScript;
 let expectedPackageVersion, expectedPluginVersion, expectedEvents, sourceRoot, parse;
@@ -76,21 +82,42 @@ try {
   report.pluginVersion = pluginManifest.version;
 
   root = await mkdtemp(join(tmpdir(), "memorax-code-codex-install-"));
+  check(fixtureUser !== userInfo().username, "The saved account fixture must differ from the actual system username");
   const userHome = join(root, "user home 测试");
   workspace = join(root, "workspace 测试");
   stateHome = join(userHome, ".memorax-code");
   codexHome = join(userHome, ".codex");
   await Promise.all([workspace, stateHome, codexHome, join(root, "tmp")].map((path) => mkdir(path, { recursive: true })));
   backendPort = await freePort();
-  endpoint = createServer((_request, response) => {
-    requests += 1;
-    response.writeHead(503).end();
+  endpoint = createServer(async (request, response) => {
+    if (!allowSearch) {
+      requests += 1;
+      response.writeHead(503).end();
+      return;
+    }
+    try {
+      let raw = "";
+      for await (const chunk of request) {
+        raw += chunk;
+        check(raw.length <= 32_768, "Explicit Search request exceeded the fixture size limit");
+      }
+      memoryRequests.push({ method: request.method, path: request.url,
+        authorization: request.headers.authorization, body: JSON.parse(raw) });
+      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ success: true,
+        data: { task_id: "lifecycle-search", status: "completed", data: [{ id: "saved-account-fixture",
+          memory: searchFixture, score: 0.95, metadata: { memory_type: "procedural" } }] } }));
+    } catch {
+      endpointErrors.push("INVALID_EXPLICIT_SEARCH_REQUEST");
+      response.writeHead(400).end();
+    }
   });
   await new Promise((done, reject) => { endpoint.once("error", reject); endpoint.listen(0, "127.0.0.1", done); });
   const dummyUrl = `http://127.0.0.1:${endpoint.address().port}`;
-  env = isolatedEnv(userHome, codexCommand, dummyUrl);
+  savedEndpoint = `${dummyUrl}/saved-account`;
+  env = isolatedEnv(userHome, codexCommand);
   await writeFile(join(stateHome, "config.toml"), ["[clients]", "codex = true",
-    ...otherClients.map((client) => `${client} = false`), ""].join("\n"), { mode: 0o600 });
+    ...otherClients.map((client) => `${client} = false`), "[memory.writeback]", "enabled = false",
+    "[jev]", "enabled = false", ""].join("\n"), { mode: 0o600 });
   originalProvider = { model: "install-smoke", model_provider: "install-smoke", model_providers: {
     "install-smoke": { name: "Install smoke", base_url: dummyUrl, wire_api: "responses" },
   } };
@@ -112,7 +139,7 @@ try {
     const scenarioHome = join(root, name);
     stateHome = join(scenarioHome, ".memorax-code");
     codexHome = join(scenarioHome, ".codex");
-    env = isolatedEnv(scenarioHome, codexCommand, dummyUrl);
+    env = isolatedEnv(scenarioHome, codexCommand);
     await Promise.all([stateHome, codexHome].map((path) => mkdir(path, { recursive: true })));
     await writeFile(join(stateHome, "config.toml"), initialConfig, { mode: 0o600 });
     await writeFile(join(codexHome, "config.toml"), initialCodexConfig, { mode: 0o600 });
@@ -150,20 +177,22 @@ try {
   await new Promise((done, reject) => { occupied.once("error", reject); occupied.listen(backendPort, "127.0.0.1", done); });
   setupStarted = true;
   try {
+    env.MEMORAX_CODE_MEMORAX_ENDPOINT = savedEndpoint;
     const failure = await rejectedProduct(["setup", "--existing-account", "--non-interactive"], `${fixtureKey}\n`);
     check(["BACKEND_EXITED_BEFORE_READY", "BACKEND_HEALTH_NOT_READY"].includes(failure.diagnosticCode),
       "Occupied-port setup failed for an unexpected reason");
     report.setupFailureCode = failure.diagnosticCode;
     check(!(await exists(completionPath())), "Failed Backend startup was recorded as completed setup");
   } finally {
+    delete env.MEMORAX_CODE_MEMORAX_ENDPOINT;
     occupied.closeAllConnections();
     await new Promise((done) => occupied.close(done));
   }
   report.checks.push("occupied Backend port fails setup without recording completion");
 
   stage = "failed setup recovery";
-  await product(["setup", "--existing-account", "--non-interactive"], `${fixtureKey}\n`);
-  await verifyReady("occupied-port recovery");
+  await terminalSetup("reuse");
+  await verifyReady("occupied-port recovery", userInfo().username);
   await stopAndVerify();
 
   await prepareScenarioHome("fresh install user 测试");
@@ -178,7 +207,7 @@ try {
       check(interactive.status === "PASS" && interactive.usernamePromptSeen && interactive.keyPromptSeen && interactive.credentialNotEchoed,
         "Interactive setup did not complete its native masked-key prompts");
     } else {
-      await product(["setup", "--existing-account", "--non-interactive"], `${fixtureKey}\n`);
+      await terminalSetup("reuse");
     }
     await verifyReady(attempt);
   }
@@ -215,9 +244,13 @@ try {
 
   stage = "npm reinstall";
   await npmInstall(candidateTarball);
-  await product(["setup", "--existing-account", "--non-interactive"], `${fixtureKey}\n`);
+  const reused = await terminalSetup("reuse");
+  check(reused.status === "PASS" && reused.accountInputSent === false,
+    "Ordinary reinstall did not restore the saved account without account input");
   await verifyReady("reinstall");
   await verifyPreserved(savedMemoraxConfig);
+  await verifySavedAccountSearch("reinstall");
+  report.checks.push("ordinary setup after native uninstall and npm reinstall restored the saved account without account input");
   await stopAndVerify();
 
   // A second isolated home starts with the real previous published package.
@@ -228,7 +261,7 @@ try {
   preservedMemory.clear();
   await npmInstall(`@memorax/memorax-code@${previousVersion}`);
   check((await readJson(join(packageRoot, "package.json"))).version === previousVersion, "Previous version was not installed");
-  await product(["setup", "--existing-account", "--non-interactive"], `${fixtureKey}\n`);
+  await terminalSetup("complete");
   const previousStatus = await productJson(["status", "--clients", "codex", "--json"]);
   check(previousStatus.ok === true && previousStatus.backend?.ok === true && previousStatus.codexAdapter?.ok === true,
     "Previous published version did not start successfully");
@@ -243,6 +276,8 @@ try {
 
   stage = "live public update";
   const artifact = await readFile(candidateTarball);
+  let servedArtifact = artifact;
+  let servedManifest = manifest;
   const registryRequests = { manifest: 0, artifact: 0, rejectedArtifact: 0 };
   let rejectDownload = true;
   let registryUrl;
@@ -250,8 +285,8 @@ try {
     const path = decodeURIComponent(new URL(request.url, "http://localhost").pathname);
     if (path === "/@memorax/memorax-code") {
       registryRequests.manifest += 1;
-      const version = { ...manifest, dist: { tarball: `${registryUrl}/candidate.tgz`,
-        shasum: createHash("sha1").update(artifact).digest("hex") } };
+      const version = { ...servedManifest, dist: { tarball: `${registryUrl}/candidate.tgz`,
+        shasum: createHash("sha1").update(servedArtifact).digest("hex") } };
       response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
         name: manifest.name, "dist-tags": { latest: manifest.version }, versions: { [manifest.version]: version },
       }));
@@ -262,7 +297,7 @@ try {
         return;
       }
       registryRequests.artifact += 1;
-      response.writeHead(200, { "content-type": "application/octet-stream" }).end(artifact);
+      response.writeHead(200, { "content-type": "application/octet-stream" }).end(servedArtifact);
     } else {
       response.writeHead(404).end();
     }
@@ -325,14 +360,79 @@ try {
   report.candidateUpdate = { from: expectedPackageVersion, to: expectedPackageVersion,
     mechanism: "candidate public update --latest --force with a fresh npm cache" };
   report.checks.push("candidate updater reinstalled the artifact and replaced the running Backend with configuration and memory retained");
+  await verifySavedAccountSearch("candidate force update");
+
+  stage = "candidate package replacement lifecycle failure";
+  const replacementBackend = await readJson(pidPath());
+  const faultMarker = join(root, "npm-replacement-fault.json");
+  const fault = await makeReplacementFaultArtifact(packageRoot, faultMarker, replacementBackend.pid);
+  servedArtifact = await readFile(fault.tarball);
+  servedManifest = fault.manifest;
+  const beforeFaultRequests = { ...registryRequests };
+  const diagnosticsRoot = join(stateHome, "runtime", "diagnostics");
+  const beforeFaultDiagnostics = new Set(await exists(diagnosticsRoot) ? await readdir(diagnosticsRoot) : []);
+  env.npm_config_cache = join(root, "failed replacement npm cache");
+  const failedReplacement = await rejectedProduct(["update", "--latest", "--force"]);
+  check(failedReplacement.diagnosticCode === "UPDATE_INSTALL_FAILED",
+    "Package replacement failed without the expected public update diagnostic");
+  check(registryRequests.artifact > beforeFaultRequests.artifact,
+    "The replacement failure did not download the fault-injected candidate");
+  const faultEvidence = await readJson(faultMarker);
+  check(faultEvidence.stage === "postinstall" && faultEvidence.transitionState === "retired"
+    && faultEvidence.oldBackendStopped === true && faultEvidence.candidateVersion === expectedPackageVersion,
+  "Fault injection did not reach real package replacement after the old Backend retired");
+  await verifyPreserved(upgradeConfig);
+  const diagnostics = await Promise.all((await readdir(diagnosticsRoot))
+    .filter((name) => /^mc-.*\.json$/.test(name) && !beforeFaultDiagnostics.has(name))
+    .map((name) => readJson(join(diagnosticsRoot, name))));
+  const replacementFailure = diagnostics.find((item) => item.operation === "update"
+    && item.errorCode === "UPDATE_INSTALL_FAILED" && item.commandExitCode === 23
+    && ["restored", "failed"].includes(item.recoveryStatus));
+  check(replacementFailure && ["restored", "failed"].includes(replacementFailure.recoveryStatus),
+    "Failed package replacement did not record a recognizable recovery outcome");
+  if (replacementFailure.recoveryStatus === "failed") {
+    check((await readJson(join(stateHome, "runtime", "install", "package-transition.json"))).state === "retired",
+      "Failed recovery lost pending package transition authority");
+    await product(["update", "--recover"]);
+  }
+  await verifyReady("failed replacement recovery");
+  await verifyBackendReplacement(replacementBackend, "failed replacement recovery");
+  check(!(await exists(join(stateHome, "runtime", "install", "package-transition.json"))),
+    "Recovered replacement retained pending transition authority");
+  report.replacementFailure = { evidence: "real_npm_with_candidate_postinstall_fault_injection",
+    injectedExitCode: 23, npmExitCode: replacementFailure.commandExitCode,
+    publicCommandExitCode: failedReplacement.code, diagnosticCode: replacementFailure.errorCode,
+    recoveryStatus: replacementFailure.recoveryStatus, originalCommandFailed: true };
+  report.checks.push("candidate npm replacement failed after old Backend retirement; the public error and recovery state remained identifiable and the saved account survived");
+
+  stage = "retry candidate package replacement";
+  servedArtifact = artifact;
+  servedManifest = manifest;
+  env.npm_config_cache = join(root, "replacement retry npm cache");
+  const recoveredBackend = await readJson(pidPath());
+  await terminalSetup("force-update");
+  await verifyReady("replacement retry");
+  await verifyBackendReplacement(recoveredBackend, "replacement retry");
+  await verifyPreserved(upgradeConfig);
+  const installedManifest = await readJson(join(packageRoot, "package.json"));
+  check(installedManifest.scripts.postinstall === manifest.scripts.postinstall,
+    "Replacement retry retained the injected lifecycle script");
+  check(!(await exists(join(stateHome, "runtime", "install", "package-transition.json"))),
+    "Replacement retry retained pending transition authority");
+  await verifySavedAccountSearch("replacement retry");
+  report.checks.push("retry installed the unmodified candidate and restored native readiness and saved-account Search");
   stage = "outbound isolation";
   check(requests === 0, "Installation unexpectedly contacted the model or MemoraX endpoint");
-  report.checks.push("no model or MemoraX requests");
+  check(endpointErrors.length === 0, "The explicit Search fixture received malformed requests");
+  report.outbound = { installationRequests: requests, explicitSearchRequests: memoryRequests.length,
+    observation: "configured loopback endpoint", setupEndpointOverride: "initial account enrollment only",
+    credentialInputOnReinstall: false };
+  report.checks.push("configured model/MemoraX endpoint received no lifecycle requests; only deliberate saved-account Search requests reached the loopback fixture");
   report.status = "PASS";
 } catch (error) {
   report.stage = stage;
   const assertionCode = typeof error.message === "string"
-    ? error.message.match(/^(?:SETUP_INPUT_REJECTION|BACKEND_REPLACEMENT|TERMINAL_DISCLOSED|EMPTY_CREDENTIAL_CANARY)[A-Z_]*/)?.[0]
+    ? error.message.match(/^(?:SETUP_INPUT_REJECTION|BACKEND_REPLACEMENT|TERMINAL_DISCLOSED|EMPTY_CREDENTIAL_CANARY|PROTECTED_)[A-Z_]*/)?.[0]
     : undefined;
   report.error = error.smokeMessage ?? assertionCode ?? "The stage failed; private command output was suppressed";
   if (typeof error.code === "number") report.exitCode = error.code;
@@ -382,7 +482,7 @@ try {
 console.log(JSON.stringify(report, null, 2));
 if (report.status !== "PASS") process.exitCode = 1;
 
-async function verifyReady(attempt) {
+async function verifyReady(attempt, expectedUser = fixtureUser) {
   stage = `${attempt} native registration`;
   const native = JSON.parse((await run(env.CODEX_CLI_PATH, ["plugin", "list", "--available", "--json"])).stdout);
   check(Array.isArray(native.installed), "Codex did not return an installed plugin list");
@@ -408,9 +508,24 @@ async function verifyReady(attempt) {
   const completion = await readJson(join(stateHome, "runtime", "setup", "setup-completion.json"));
   check(completion.version === 1 && completion.state === "complete"
     && completion.completedByVersion === expectedPackageVersion, "Setup did not record completion for this package");
-  const memorax = parse(await readFile(join(stateHome, "config.toml"), "utf8")).memorax;
-  check(memorax?.api_key === fixtureKey && memorax.endpoint === env.MEMORAX_CODE_MEMORAX_ENDPOINT,
-    "Setup did not preserve the exact supplied credential and endpoint");
+  check(!Object.hasOwn(env, "MEMORAX_CODE_MEMORAX_ENDPOINT")
+    && !Object.hasOwn(env, "MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED")
+    && !Object.hasOwn(env, "MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED"),
+  "A test environment override could mask saved endpoint or writeback configuration");
+  const saved = parse(await readFile(join(stateHome, "config.toml"), "utf8"));
+  check(saved.memorax?.api_key === fixtureKey && saved.memorax.endpoint === savedEndpoint
+    && saved.memorax.user_id === expectedUser,
+  "Setup did not preserve the exact supplied user identity, credential and endpoint");
+  check(saved.memory?.writeback?.enabled === false && saved.jev?.enabled === false
+    && saved.clients?.codex === true && otherClients.every((client) => saved.clients?.[client] === false),
+  "Lifecycle changed a persisted user feature or client selection");
+  const effectiveMemory = JSON.parse((await run(process.execPath,
+    [join(dirname(entrypoint), "memorax-cli.mjs"), "status", "--config-only", "--json"])).stdout);
+  check(effectiveMemory.ok === true && effectiveMemory.config?.baseUrl === savedEndpoint
+    && effectiveMemory.config.userId === expectedUser
+    && effectiveMemory.config.writeback?.writebackEnabled === false
+    && effectiveMemory.config.writeback?.globalEnabled === true,
+  "Effective memory configuration does not honor the saved account and persisted writeback disablement");
   const status = await productJson(["status", "--clients", "codex", "--json"]);
   check(status.ok === true && status.backend?.ok === true, "The installed Backend is not healthy");
   check(status.codexAdapter?.ok === true && status.codexAdapter.enabled === true
@@ -487,26 +602,13 @@ async function assertStopped() {
   backendPids.clear();
 }
 async function verifyPreserved(config) {
-  // Upgrades may add defaults or rewrite TOML formatting, but every existing
-  // configured value must retain its meaning.
-  const mismatch = changedConfigField(parse(await readFile(join(stateHome, "config.toml"), "utf8")), parse(config));
-  check(mismatch === undefined, `Lifecycle changed the existing MemoraX configuration field: ${mismatch}`);
+  assertProtectedConfiguration(parse(await readFile(join(stateHome, "config.toml"), "utf8")),
+    snapshotProtectedConfiguration(parse(config)));
   const codex = parse(await readFile(join(codexHome, "config.toml"), "utf8"));
   check(codex.model === originalProvider.model && codex.model_provider === originalProvider.model_provider
     && JSON.stringify(codex.model_providers) === JSON.stringify(originalProvider.model_providers),
   "Lifecycle changed the existing Codex provider configuration");
   for (const [path, contents] of preservedMemory) check(await readFile(path, "utf8") === contents, "Lifecycle changed retained personal memory");
-}
-function changedConfigField(actual, expected, prefix = "config") {
-  if (expected && typeof expected === "object" && !Array.isArray(expected) && !(expected instanceof Date)) {
-    if (!actual || typeof actual !== "object") return prefix;
-    for (const [key, value] of Object.entries(expected)) {
-      const mismatch = changedConfigField(actual[key], value, `${prefix}.${key}`);
-      if (mismatch !== undefined) return mismatch;
-    }
-    return undefined;
-  }
-  return isDeepStrictEqual(actual, expected) ? undefined : prefix;
 }
 async function rejectedProduct(args, input) {
   let failure;
@@ -519,9 +621,12 @@ async function rejectedProduct(args, input) {
   return failure;
 }
 async function terminalSetup(mode) {
+  // Account enrollment has no endpoint prompt. Supply its endpoint only for
+  // this initial input; every reuse, update and request reads persisted state.
+  if (mode === "complete" || mode === "cancel") env.MEMORAX_CODE_MEMORAX_ENDPOINT = savedEndpoint;
   try {
     return JSON.parse((await run(process.execPath, [ptyScript, ptyPackage, entrypoint, mode],
-      JSON.stringify({ username: "install-smoke", apiKey: fixtureKey }))).stdout);
+      JSON.stringify({ username: fixtureUser, apiKey: fixtureKey }))).stdout);
   } catch (error) {
     // The helper emits only a bounded safe JSON report; raw terminal output
     // stays private even when a test assertion or native terminal launch fails.
@@ -529,12 +634,70 @@ async function terminalSetup(mode) {
       const safe = JSON.parse(error.stdout);
       if (/^[A-Z][A-Z0-9_]{1,79}$/.test(safe.error)) error.terminalError = safe.error;
       error.terminalDiagnostics = Object.fromEntries([
-        "usernamePromptSeen", "keyPromptSeen", "languagePromptSeen", "outputBytes", "cursorPositionReplies", "exitCode", "signal",
+        "usernamePromptSeen", "keyPromptSeen", "languagePromptSeen", "accountInputSent", "outputBytes", "cursorPositionReplies", "exitCode", "signal",
       ].filter((key) => typeof safe[key] === "boolean" || Number.isFinite(safe[key])).map((key) => [key, safe[key]]));
       if (/^[A-Z][A-Z0-9_]{1,79}$/.test(safe.nativeErrorCode)) error.terminalNativeError = safe.nativeErrorCode;
     } catch {}
     throw error;
+  } finally {
+    delete env.MEMORAX_CODE_MEMORAX_ENDPOINT;
   }
+}
+async function verifySavedAccountSearch(label) {
+  stage = `${label} saved-account Search`;
+  check(requests === 0, "A lifecycle operation contacted the model or MemoraX fixture before explicit Search");
+  const before = memoryRequests.length;
+  const query = `Verify the saved lifecycle account after ${label}.`;
+  let result;
+  allowSearch = true;
+  try {
+    result = JSON.parse((await run(process.execPath,
+      [join(dirname(entrypoint), "memorax-cli.mjs"), "search", "--query", query, "--json"])).stdout);
+  } finally {
+    allowSearch = false;
+  }
+  check(endpointErrors.length === 0 && memoryRequests.length === before + 1,
+    "Explicit Search did not make exactly one request to the saved endpoint");
+  const request = memoryRequests[before];
+  const scopedUser = `${fixtureUser}@workspace-测试`;
+  check(request.method === "POST" && request.path === "/saved-account/v1/memories/search"
+    && request.authorization === `Token ${fixtureKey}` && request.body.user_id === scopedUser
+    && request.body.query === query && !Object.hasOwn(request.body, "session_id"),
+  "Explicit Search changed the saved endpoint, credential, scoped user identity or query");
+  check(result.ok === true && result.action === "memory.search" && result.query === query
+    && result.baseUserId === fixtureUser && result.effectiveUserId === scopedUser
+    && result.items?.length === 1 && result.items[0].memory === searchFixture
+    && result.receipt?.accepted === true,
+  "Explicit Search did not return the saved account identity and fixture result");
+  report.checks.push(`${label}: installed memory CLI Search used the saved endpoint, credential and workspace-scoped account`);
+}
+
+async function makeReplacementFaultArtifact(packageRoot, faultMarker, oldPid) {
+  const faultRoot = join(root, "fault candidate");
+  await cp(packageRoot, faultRoot, { recursive: true,
+    filter: (source) => !relative(packageRoot, source).split(/[\\/]/).includes("node_modules") });
+  const manifest = await readJson(join(faultRoot, "package.json"));
+  // The artifact differs only in a test lifecycle wrapper. Its real preinstall,
+  // Backend, adapters and updater are unchanged; this is injected npm failure
+  // evidence, not a product defect or a rejected-download substitute.
+  manifest.scripts.postinstall = "node ./bin/ci-replacement-failure.mjs";
+  await writeFile(join(faultRoot, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  await writeFile(join(faultRoot, "bin", "ci-replacement-failure.mjs"), [
+    'import { readFileSync, writeFileSync } from "node:fs";',
+    'import { join } from "node:path";',
+    `const marker = ${JSON.stringify(faultMarker)};`,
+    `const oldPid = ${JSON.stringify(oldPid)};`,
+    'const transition = JSON.parse(readFileSync(join(process.env.MEMORAX_CODE_HOME, "runtime", "install", "package-transition.json"), "utf8"));',
+    'let oldBackendStopped = false;',
+    'try { process.kill(oldPid, 0); } catch (error) { if (error.code === "ESRCH") oldBackendStopped = true; else throw error; }',
+    'if (transition.state !== "retired" || !oldBackendStopped) process.exit(24);',
+    `writeFileSync(marker, JSON.stringify({ stage: "postinstall", transitionState: transition.state, oldBackendStopped, candidateVersion: ${JSON.stringify(manifest.version)} }), { mode: 0o600 });`,
+    'process.exit(23);', "",
+  ].join("\n"));
+  const packed = JSON.parse((await run(npmCommand,
+    ["pack", faultRoot, "--ignore-scripts", "--pack-destination", faultRoot, "--json"])).stdout);
+  check(packed.length === 1 && typeof packed[0].filename === "string", "Fault-injected npm artifact was not packed");
+  return { tarball: join(faultRoot, packed[0].filename), manifest };
 }
 async function npmInstall(specifier) {
   await run(npmCommand, ["install", "--global", "--prefix", npmPrefix, "--no-audit", "--no-fund", specifier]);
@@ -559,7 +722,7 @@ async function run(command, args, input = "") {
   catch (error) {
     // Report only the stable product error code, never raw process output.
     assertCredentialNotEchoed(`${error.stdout ?? ""}\n${error.stderr ?? ""}`, fixtureKey);
-    error.diagnosticCode = `${error.stdout ?? ""}\n${error.stderr ?? ""}`.match(/\b(?:CLIENT|CODEX|BACKEND|SETUP|CONFIG|UPDATE|PACKAGE|INSTALL)_[A-Z_]{3,}\b/)?.[0];
+    error.diagnosticCode = `${error.stdout ?? ""}\n${error.stderr ?? ""}`.match(/\b(?:CLIENT|CODEX|BACKEND|SETUP|CONFIG|UPDATE|PACKAGE|INSTALL|MEMORY)_[A-Z_]{3,}\b/)?.[0];
     throw error;
   }
   assertCredentialNotEchoed(`${result.stdout}\n${result.stderr}`, fixtureKey);
@@ -577,7 +740,7 @@ async function freePort() {
   return port;
 }
 
-function isolatedEnv(userHome, codexCommand, dummyUrl) {
+function isolatedEnv(userHome, codexCommand) {
   const windowsRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
   const systemPaths = process.platform === "win32"
     ? [join(windowsRoot, "System32"), windowsRoot, join(windowsRoot, "System32", "Wbem"),
@@ -593,7 +756,6 @@ function isolatedEnv(userHome, codexCommand, dummyUrl) {
     npm_config_cache: join(root, "npm-cache"), npm_config_prefix: npmPrefix,
     MEMORAX_CODE_HOME: stateHome, MEMORAX_CODE_AUTO_UPDATE: "false", MEMORAX_CODE_INSTALL_WATCHDOG: "0",
     MEMORAX_CODE_BACKEND_HOST: "127.0.0.1", MEMORAX_CODE_BACKEND_PORT: String(backendPort),
-    MEMORAX_CODE_MEMORAX_ENDPOINT: dummyUrl, MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED: "false",
     CODEX_HOME: codexHome, CODEX_CLI_PATH: codexCommand, MEMORAX_CODE_CODEX_COMMAND: codexCommand,
     DSH_HOME: join(userHome, ".dsh"), CLAUDE_CONFIG_DIR: join(userHome, ".claude"), CLAUDE_HOME: join(userHome, ".claude"),
     OPENCODE_CONFIG_DIR: join(userHome, ".config", "opencode"),

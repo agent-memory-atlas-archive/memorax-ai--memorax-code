@@ -102,6 +102,31 @@ function activeTomlSections(text) {
     .sort();
 }
 
+function assertConfiguredValuesPreserved(expected, actual, path = "config") {
+  for (const [key, value] of Object.entries(expected)) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      assert.ok(actual?.[key] && typeof actual[key] === "object", `${path}.${key} must remain configured`);
+      assertConfiguredValuesPreserved(value, actual[key], `${path}.${key}`);
+    } else {
+      assert.deepEqual(actual?.[key], value, `${path}.${key} changed`);
+    }
+  }
+}
+
+const clientIds = ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor"];
+const laterClientFixtures = [
+  { client: "opencode", available: { opencodeCliAvailable: true }, detected: /OpenCode CLI: found in PATH/ },
+  { client: "codebuddy", available: { codebuddyAvailable: true }, detected: /CodeBuddy CLI: codebuddy 9\.9\.9-test/ },
+  { client: "workbuddy", available: { workbuddyAvailable: true }, detected: /WorkBuddy: workbuddy 9\.9\.9-test/ },
+  { client: "trae", available: { traeAvailable: true }, detected: /Trae application: detected/ },
+  { client: "cursor", available: { cursorAvailable: true }, detected: /Cursor application: detected/ },
+];
+
+function legacyClientConfig(omitted, selected = "codex") {
+  return ["[clients]", ...clientIds.filter((client) => client !== omitted)
+    .map((client) => `${client} = ${client === selected}`), ""].join("\n");
+}
+
 function setupCompletionPath(memoraxCodeHome) {
   return join(memoraxCodeHome, "runtime", "setup", "setup-completion.json");
 }
@@ -1528,6 +1553,15 @@ test("interactive setup after reinstall automatically reuses a complete MemoraX 
     "",
     "[memory.writeback]",
     "enabled = false",
+    "buffer_enabled = false",
+    "chunk_enabled = false",
+    "",
+    "[memory.cli]",
+    "add_enabled = false",
+    "",
+    "[trace.codex]",
+    "enabled = false",
+    "capture_content = false",
     "",
   ].join("\n");
   const run = await runSetup({
@@ -1546,8 +1580,8 @@ test("interactive setup after reinstall automatically reuses a complete MemoraX 
     assert.match(run.result.stderr, /MemoraX memory: .*Configured/);
     assert.match(run.result.stderr, /Automatic writeback: Disabled by effective configuration/);
     const updated = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
-    assert.ok(updated.startsWith(existingConfig));
-    assert.deepEqual(parse(updated), { ...parse(existingConfig), jev: { enabled: false, api_key: "" } });
+    assertConfiguredValuesPreserved(parse(existingConfig), parse(updated));
+    assert.deepEqual(parse(updated).jev, { enabled: false, api_key: "" });
     await assertSetupComplete(run);
   } finally {
     await rm(run.root, { recursive: true, force: true });
@@ -1759,6 +1793,7 @@ test("automatic update setup is non-interactive and preserves disabled clients",
     "codebuddy = false",
     "workbuddy = false",
     "trae = false",
+    "cursor = false",
     "",
     "[memorax]",
     'endpoint = "https://existing-memorax.example"',
@@ -1768,11 +1803,24 @@ test("automatic update setup is non-interactive and preserves disabled clients",
     "[memory.add]",
     'output_language = "en"',
     "",
+    "[memory.writeback]",
+    "enabled = false",
+    "buffer_enabled = false",
+    "chunk_enabled = false",
+    "",
+    "[memory.cli]",
+    "add_enabled = false",
+    "",
+    "[trace.codex]",
+    "enabled = false",
+    "capture_content = false",
+    "",
   ].join("\n");
   const run = await runSetup({
     codebuddyAvailable: true,
     workbuddyAvailable: true,
     traeAvailable: true,
+    cursorAvailable: true,
     dshProfiles: ["default"],
     existingCache: true,
     hookSnapshot: [],
@@ -1787,59 +1835,50 @@ test("automatic update setup is non-interactive and preserves disabled clients",
     assert.equal(run.result.code, 0, run.result.stderr);
     assert.doesNotMatch(run.result.stderr, /Enable it now\?/);
     assert.doesNotMatch(run.result.stderr, /Trust these new or changed Codex Hooks\?/);
+    for (const pattern of [/Codex CLI: codex 9\.9\.9-test/, /Claude CLI: claude 9\.9\.9-test/,
+      /CodeBuddy CLI: codebuddy 9\.9\.9-test/, /WorkBuddy: workbuddy 9\.9\.9-test/,
+      /OpenCode configuration: found/, /Trae application: detected/, /Cursor application: detected/]) {
+      assert.match(run.result.stderr, pattern);
+    }
+    assert.match(run.result.stderr, /DeepSeek Harness profiles were detected, but the DSH integration is disabled/);
     assert.match(run.result.stderr, /Trusted 1 new or changed MemoraX Code Codex Hook/);
     assert.match(run.log, /^memorax-code start --clients codex --json$/m);
     assert.match(run.log, /^memorax-code codex-plugin trust-hooks --yes .*--json$/m);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
-    assert.match(config, /codex = true/);
-    assert.match(config, /claude = false/);
-    assert.match(config, /dsh = false/);
-    assert.match(config, /opencode = false/);
-    assert.match(config, /codebuddy = false/);
-    assert.match(config, /workbuddy = false/);
-    assert.match(config, /trae = false/);
+    assertConfiguredValuesPreserved(parse(existingConfig), parse(config));
     assert.deepEqual(parse(config).jev, { enabled: false, api_key: "" });
-    assert.equal(parse(config).memorax.api_key, "existing-api-key");
+    assert.match(run.result.stderr, /Automatic writeback: Disabled by effective configuration/);
     await assertSetupComplete(run);
   } finally {
     await rm(run.root, { recursive: true, force: true });
   }
 });
 
-test("automatic update setup enables a detected client missing from legacy config", async () => {
-  const existingConfig = [
-    "[clients]",
-    "codex = true",
-    "claude = false",
-    "dsh = false",
-    "opencode = false",
-    "",
-  ].join("\n");
-  const run = await runSetup({
-    codebuddyAvailable: true,
-    workbuddyAvailable: true,
-    existingCache: true,
-    interactive: false,
-    memoraxCodeConfig: existingConfig,
-    memoraxEnv: { MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE: "1" },
-    traeAvailable: true,
-    updateMode: true,
+test("automatic update setup enables a detected client missing from legacy config", async (t) => {
+  for (const { client, available, detected } of laterClientFixtures) await t.test(client, async () => {
+    const existingConfig = legacyClientConfig(client);
+    const run = await runSetup({
+      ...available,
+      existingCache: true,
+      interactive: false,
+      memoraxCodeConfig: existingConfig,
+      memoraxEnv: { MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE: "1" },
+      updateMode: true,
+    });
+    try {
+      assert.equal(run.result.code, 0, run.result.stderr);
+      assert.doesNotMatch(run.result.stderr, /Enable it now\?/);
+      assert.match(run.result.stderr, detected);
+      assert.ok(run.log.includes(`memorax-code start --clients codex,${client} --json\n`), run.log);
+      const config = parse(await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8"));
+      assertConfiguredValuesPreserved(parse(existingConfig), config);
+      assert.equal(config.clients[client], true);
+      assert.notEqual(config.memory?.writeback?.enabled, true, "Legacy configuration must not implicitly enable writeback");
+      await assertSetupComplete(run);
+    } finally {
+      await rm(run.root, { recursive: true, force: true });
+    }
   });
-  try {
-    assert.equal(run.result.code, 0, run.result.stderr);
-    assert.doesNotMatch(run.result.stderr, /Enable it now\?/);
-    assert.match(run.log, /^memorax-code start --clients codex,codebuddy,workbuddy,trae --json$/m);
-    const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
-    assert.match(config, /codex = true/);
-    assert.match(config, /claude = false/);
-    assert.match(config, /opencode = false/);
-    assert.match(config, /codebuddy = true/);
-    assert.match(config, /workbuddy = true/);
-    assert.match(config, /trae = true/);
-    await assertSetupComplete(run);
-  } finally {
-    await rm(run.root, { recursive: true, force: true });
-  }
 });
 
 test("automatic update setup preserves independent CodeBuddy CLI and WorkBuddy selections", async () => {
@@ -1894,32 +1933,62 @@ test("automatic update setup migrates a verified legacy WorkBuddy selection with
   }
 });
 
-test("automatic update setup leaves an unavailable unconfigured client undecided", async () => {
-  const existingConfig = [
-    "[clients]",
-    "codex = true",
-    "claude = false",
-    "dsh = false",
-    "opencode = false",
-    "",
-  ].join("\n");
-  const run = await runSetup({
-    existingCache: true,
-    interactive: false,
-    memoraxCodeConfig: existingConfig,
-    memoraxEnv: { MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE: "1" },
-    updateMode: true,
+test("automatic update setup leaves an unavailable unconfigured client undecided and discovers it later", async (t) => {
+  for (const { client, available, detected } of laterClientFixtures) await t.test(client, async () => {
+    const existingConfig = legacyClientConfig(client);
+    const options = { existingCache: true, interactive: false,
+      memoraxEnv: { MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE: "1" }, updateMode: true };
+    const unavailable = await runSetup({ ...options, memoraxCodeConfig: existingConfig });
+    let savedConfig;
+    try {
+      assert.equal(unavailable.result.code, 0, unavailable.result.stderr);
+      assert.match(unavailable.log, /^memorax-code start --clients codex --json$/m);
+      savedConfig = await readFile(join(unavailable.memoraxCodeHome, "config.toml"), "utf8");
+      assertConfiguredValuesPreserved(parse(existingConfig), parse(savedConfig));
+      assert.equal(Object.hasOwn(parse(savedConfig).clients, client), false, "Unavailable does not mean explicitly disabled");
+      await assertSetupComplete(unavailable);
+    } finally {
+      await rm(unavailable.root, { recursive: true, force: true });
+    }
+    // Carry forward the actual saved configuration, not the original fixture.
+    // Each setup uses an isolated runtime so only persisted selection is shared.
+    const detectedLater = await runSetup({ ...options, ...available, memoraxCodeConfig: savedConfig });
+    try {
+      assert.equal(detectedLater.result.code, 0, detectedLater.result.stderr);
+      assert.match(detectedLater.result.stderr, detected);
+      assert.ok(detectedLater.log.includes(`memorax-code start --clients codex,${client} --json\n`), detectedLater.log);
+      const config = parse(await readFile(join(detectedLater.memoraxCodeHome, "config.toml"), "utf8"));
+      assertConfiguredValuesPreserved(parse(savedConfig), config);
+      assert.equal(config.clients[client], true);
+      assert.notEqual(config.memory?.writeback?.enabled, true, "Client discovery must not opt into automatic writeback");
+      await assertSetupComplete(detectedLater);
+    } finally {
+      await rm(detectedLater.root, { recursive: true, force: true });
+    }
   });
-  try {
-    assert.equal(run.result.code, 0, run.result.stderr);
-    assert.match(run.log, /^memorax-code start --clients codex --json$/m);
-    const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
-    assert.deepEqual(parse(config).clients, parse(existingConfig).clients);
-    assert.doesNotMatch(tomlSectionText(config, "clients"), /codebuddy\s*=/);
-    assert.doesNotMatch(tomlSectionText(config, "clients"), /trae\s*=/);
-    await assertSetupComplete(run);
-  } finally {
-    await rm(run.root, { recursive: true, force: true });
+});
+
+test("partial legacy client selections preserve explicit exclusions during update and reinstall", async (t) => {
+  for (const missing of ["codex", "claude"]) for (const mode of ["automatic update", "ordinary reinstall"]) {
+    await t.test(`${mode}: missing ${missing}`, async () => {
+      const existingConfig = `${legacyClientConfig(missing, missing)}\n[memorax]\nendpoint = "https://memorax.example"\napi_key = "existing-secret"\nuser_id = "existing-user"\n`;
+      const run = await runSetup({
+        memoraxCodeConfig: existingConfig,
+        opencodeAvailable: true, traeAvailable: true, cursorAvailable: true, dshProfiles: ["default"],
+        ...(mode === "automatic update" ? { existingCache: true, interactive: false, updateMode: true,
+          memoraxEnv: { MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE: "1" } } : {}),
+      });
+      try {
+        assert.equal(run.result.code, 0, run.result.stderr);
+        const config = parse(await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8"));
+        assertConfiguredValuesPreserved(parse(existingConfig), config);
+        assert.equal(config.clients[missing], true);
+        assert.ok(run.log.includes(`memorax-code start --clients ${missing} --json\n`), run.log);
+        await assertSetupComplete(run);
+      } finally {
+        await rm(run.root, { recursive: true, force: true });
+      }
+    });
   }
 });
 

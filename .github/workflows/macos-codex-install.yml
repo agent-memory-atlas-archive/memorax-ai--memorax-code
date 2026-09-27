@@ -25,6 +25,7 @@ jobs:
     timeout-minutes: 20
     outputs:
       codex-matrix: ${{ steps.codex-versions.outputs.matrix }}
+      artifact-ready: ${{ steps.package-check.outputs.artifact-ready }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -58,19 +59,32 @@ jobs:
       - name: Verify test assertions reject malformed content and unexpected failures
         run: node --test scripts/codex-native-content-check.test.mjs scripts/codex-lifecycle-assertions.test.mjs
       - name: Build and validate the installable package
+        id: package-check
         shell: bash
         run: |
           test_root="$(mktemp -d)"
           trap 'rm -rf "$test_root"' EXIT
           mkdir -p "$test_root/user" "$test_root/tmp"
+          package_status=0
           env -i PATH="$PATH" HOME="$test_root/user" \
             MEMORAX_CODE_HOME="$test_root/state" \
             npm_config_cache="$test_root/npm-cache" TMPDIR="$test_root/tmp" \
-            make npm-package-check
+            make npm-package-check || package_status=$?
+          if [[ -f dist/npm/check-result.json ]]; then
+            node --input-type=module <<'NODE'
+          import { readFileSync, appendFileSync } from 'node:fs';
+          const result = JSON.parse(readFileSync('dist/npm/check-result.json', 'utf8'));
+          if (result.artifactChecks !== 'PASS') throw new Error('Artifact validation did not complete');
+          appendFileSync(process.env.GITHUB_OUTPUT, 'artifact-ready=true\n');
+          NODE
+          fi
+          exit "$package_status"
       - name: Record artifact checksum
+        if: always() && steps.package-check.outputs.artifact-ready == 'true'
         shell: bash
         run: sha256sum dist/npm/tarballs/*.tgz
       - uses: actions/upload-artifact@v4
+        if: always() && steps.package-check.outputs.artifact-ready == 'true'
         with:
           name: memorax-code-package
           path: dist/npm/tarballs/*.tgz
@@ -80,6 +94,7 @@ jobs:
   install:
     name: Codex ${{ matrix.channel }} ${{ matrix.codex }} (${{ matrix.os }}, Node ${{ matrix.node }})
     needs: package
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.codex-matrix) }}

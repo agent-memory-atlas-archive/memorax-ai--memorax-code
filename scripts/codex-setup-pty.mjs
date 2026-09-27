@@ -17,7 +17,7 @@ let cursorReports = 0;
 try {
   check(process.argv.length === 5, "EXPECTED_PTY_ROOT_ENTRYPOINT_AND_MODE");
   const [, , dependencyRoot, entrypoint, mode] = process.argv;
-  check(["complete", "cancel", "update", "force-update"].includes(mode), "INVALID_TERMINAL_CASE");
+  check(["complete", "cancel", "reuse", "update", "force-update"].includes(mode), "INVALID_TERMINAL_CASE");
   let raw = "";
   for await (const chunk of process.stdin) {
     raw += chunk;
@@ -41,11 +41,12 @@ try {
   delete env.MEMORAX_CODE_SETUP_ASSUME_INTERACTIVE;
   const isUpdate = mode === "update" || mode === "force-update";
   const args = isUpdate ? ["update", "--latest", ...(mode === "force-update" ? ["--force"] : [])]
-    : ["setup", "--existing-account"];
+    : mode === "reuse" ? ["setup"] : ["setup", "--existing-account"];
   terminal = spawn(process.execPath, [resolve(entrypoint), ...args], {
     name: "xterm-256color", cols: 120, rows: 40, cwd: process.cwd(), env,
   });
-  Object.assign(report, { mode, usernamePromptSeen: false, keyPromptSeen: false, languagePromptSeen: false });
+  Object.assign(report, { mode, usernamePromptSeen: false, keyPromptSeen: false, languagePromptSeen: false,
+    accountInputSent: false });
   const exited = new Promise((done) => {
     terminal.onData((chunk) => {
       output += chunk;
@@ -63,9 +64,18 @@ try {
         terminal.write("\x1b[1;1R");
       }
       const visible = stripVTControlCharacters(output);
+      if ((mode === "reuse" || isUpdate) && (/Username[^\r\n]*:/.test(visible)
+        || visible.includes("MemoraX API key:") || visible.includes("Preferred language [ZH/en]")
+        || visible.includes("Connect MemoraX Code to MemoraX now")
+        || visible.includes("Use the saved connection and memory preferences"))) {
+        errorCode = "SAVED_ACCOUNT_UNEXPECTEDLY_REQUESTED_INPUT";
+        terminal.kill();
+        return;
+      }
       // These are exact product prompt contracts, not a semantic success judge.
       if (!report.usernamePromptSeen && /Username from your existing MemoraX Code setup[^\r\n]*:/.test(visible)) {
         report.usernamePromptSeen = true;
+        report.accountInputSent = true;
         terminal.write(`${input.username}\r`);
       }
       if (!report.languagePromptSeen && visible.includes("Preferred language [ZH/en] (used for Memory extraction):")) {
@@ -87,7 +97,11 @@ try {
   report.signal = result.signal ?? 0;
   check(Number.isInteger(report.exitCode) && Number.isInteger(report.signal), "INVALID_TERMINAL_EXIT_STATUS");
   check(!errorCode, errorCode);
-  if (!isUpdate) check(report.usernamePromptSeen && report.keyPromptSeen, "EXPECTED_INTERACTIVE_PROMPTS_NOT_OBSERVED");
+  if (mode === "complete" || mode === "cancel") {
+    check(report.usernamePromptSeen && report.keyPromptSeen, "EXPECTED_INTERACTIVE_PROMPTS_NOT_OBSERVED");
+  }
+  if (mode === "reuse") check(!report.accountInputSent && !report.usernamePromptSeen
+    && !report.keyPromptSeen && !report.languagePromptSeen, "SAVED_ACCOUNT_RECEIVED_TEST_INPUT");
   try { assertCredentialNotEchoed(output, input.apiKey); }
   catch { check(false, "TERMINAL_DISCLOSED_FIXTURE_CREDENTIAL"); }
   const plainOutput = stripVTControlCharacters(output);

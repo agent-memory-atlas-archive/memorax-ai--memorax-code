@@ -335,8 +335,13 @@ runs on pull requests, pushes to `main`, and manual dispatch. Reuse the basic
 `Tests` and `Documentation` jobs above; this workflow adds installed-package
 and native-client evidence. It does not copy the source regression suites.
 Its Ubuntu job runs `npm-package-check` to build and validate one npm artifact.
-The package check still includes its existing npm regression prerequisite;
-`make test` alone does not build and install the final tarball.
+The package check still runs the npm regressions. A regression failure is retained
+as its exit status while independent artifact checks continue. Only after those
+artifact checks finish does it write `dist/npm/check-result.json`; this permits
+native jobs to inspect the validated tarball even when a contract test is red.
+The package job and final summary remain failed. An artifact-check failure does
+not publish this marker or authorize the native matrix. `make test` alone does
+not build and install the final tarball.
 
 Native jobs use temporary user and client homes on Ubuntu, macOS, and Windows
 with Node.js 24, plus Ubuntu with the minimum Node.js 20 runtime. They install
@@ -361,8 +366,35 @@ also runs its own forced update through the scoped registry. Successful updates
 must retire the old Backend process and establish a new instance with a matching
 health response. Terminal credential checks cover both raw output and visible
 text after ANSI controls are removed. Unicode and spaces in
-isolated paths, existing provider settings, configuration values, and synthetic
-personal memory are checked explicitly.
+isolated paths, existing provider settings, protected configuration and synthetic
+personal memory are checked explicitly. Protection applies to the fixture's
+MemoraX `user_id`, `api_key`, `endpoint`, explicit client choices and configured
+feature switches; managed defaults and runtime paths may change. The account is
+distinct from the system username. After initial account entry, repeated setup
+and reinstallation supply no account input or endpoint/writeback environment
+override. Explicit Search checks the actual receiver, credential and scoped user
+identity after recovery, separately from the installation's zero-request check.
+An injected npm postinstall failure exercises package replacement after retirement,
+then a public retry must restore readiness and the same protected account.
+
+The interruption suite terminates real setup after configuration publication,
+before Backend startup, and after a healthy Backend exists but before completion.
+Test-only process-entry gates and the Backend's lifecycle lock hold those stages;
+configuration bytes, PID records, health identity and completion records establish
+which stage was reached. A separate explicit account-reconfiguration case cancels
+at the masked replacement-key prompt. Each case checks the protected saved account,
+absence of false completion, ordinary retry without account input, native readiness,
+and an actual Search using the saved account. These controlled interruptions do
+not simulate power loss or establish desktop UI behavior.
+
+Setup fixture tests distinguish absent client choices from explicit disablement,
+including clients whose executables are available, partial legacy configuration,
+and a previously unavailable client discovered on a later update. They validate
+setup selection with controlled client/Backend dependencies; they do not establish
+native acceptance for those other clients. An enabled integration's removal and
+ordinary reinstall must preserve its configured selection rather than turn it
+into a permanent opt-out. Test-oracle controls permit a valid default migration
+but reject account replacement, lost disablement and accidental permanent opt-out.
 
 The native conversation check runs real Codex against a local, deterministic
 Responses server and a separate MemoraX receiver. Native Codex creates its own

@@ -35,9 +35,14 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+# Never reuse an earlier artifact-validation result after an interrupted check.
+rm -f "$out_dir/check-result.json"
+
 node scripts/check-docs.mjs
 scripts/build-npm-packages.sh "$out_dir"
+set +e
 (
+  set -e
   unset GIT_INDEX_FILE
   isolated_test_home="$(mktemp -d)"
   trap 'rm -rf "$isolated_test_home"' EXIT
@@ -54,6 +59,13 @@ scripts/build-npm-packages.sh "$out_dir"
   CURSOR_HOME="$isolated_test_home/.cursor" \
     make test-npm-package
 )
+npm_tests_status=$?
+set -e
+# Keep validating the actual artifact after a contract regression, while
+# preserving that failure as the final exit status.
+if [[ "$npm_tests_status" -ne 0 ]]; then
+  node scripts/check-local-trace-only.mjs
+fi
 
 # Keep the live registry from replacing the staged future release during smoke tests.
 export MEMORAX_CODE_AUTO_UPDATE=false
@@ -840,4 +852,6 @@ if [[ "${MEMORAX_CODE_DSH_E2E:-}" == "1" ]]; then
     node scripts/dsh-npm-package-e2e.mjs
 fi
 
-printf 'npm-package-check: completed\n'
+printf '{"artifactChecks":"PASS","npmTestsExitCode":%s}\n' "$npm_tests_status" > "$out_dir/check-result.json"
+printf 'npm-package-check: artifact checks passed; npm test exit status: %s\n' "$npm_tests_status"
+exit "$npm_tests_status"
