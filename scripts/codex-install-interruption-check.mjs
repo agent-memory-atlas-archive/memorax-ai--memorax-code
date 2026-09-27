@@ -171,11 +171,14 @@ async function runCase(phase) {
     result.errors.push(safeCode(error));
   } finally {
     try {
-      if (terminal) await stopTerminal(terminal, harness.env);
-      gateEnabled = false;
-      for (const response of blockedResponses) if (!response.destroyed) response.writeHead(503).end("cleanup");
-      releaseLock?.();
-      if (heldLock) await heldLock;
+      try {
+        if (terminal) await stopTerminal(terminal, harness.env);
+      } finally {
+        gateEnabled = false;
+        for (const response of blockedResponses) if (!response.destroyed) response.writeHead(503).end("cleanup");
+        releaseLock?.();
+        if (heldLock) await heldLock;
+      }
       if (harness) {
         delete harness.env.NODE_OPTIONS;
         await rememberBackend();
