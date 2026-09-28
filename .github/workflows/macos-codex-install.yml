@@ -198,6 +198,8 @@ jobs:
         shell: pwsh
         env:
           OPENCODE_VERSION: ${{ matrix.opencode }}
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: ./scripts/opencode-install-check.ps1 -TarballDirectory dist/npm/tarballs -OpenCodeVersion $env:OPENCODE_VERSION
 
   opencode-initialization-diagnostic:
