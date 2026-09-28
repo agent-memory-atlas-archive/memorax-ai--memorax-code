@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { assertCompleteText, selectNativeTurnContent } from "./codex-native-content-check.mjs";
-import { check, createNativeHarness, sendResponses, stopNativeProcessTree, waitFor } from "./codex-native-support.mjs";
+import { check, createNativeHarness, fixtureModel, fixtureOverrideModel, sendResponses, stopNativeProcessTree, waitFor } from "./codex-native-support.mjs";
 
 // Usage: node scripts/codex-model-inheritance-check.mjs <installed-package-root> <codex-cli-path>
 // Future acceptance check: session override inheritance is pending implementation.
@@ -13,10 +13,10 @@ import { check, createNativeHarness, sendResponses, stopNativeProcessTree, waitF
 // when the feature is supported. Shared default configuration remains required.
 // Each case must fail if a worker ignores the foreground override. A no-op model
 // response deliberately avoids testing Repo Memory generation in this suite.
-const defaults = { model: "gpt-5.4", provider: "local_native", endpoint: "default" };
+const defaults = { model: fixtureModel, provider: "local_native", endpoint: "default" };
 const cases = [
-  { id: "model-override", expected: { ...defaults, model: "gpt-5.4-mini" },
-    args: ["--model", "gpt-5.4-mini"], failure: "MODEL_OVERRIDE_NOT_INHERITED" },
+  { id: "model-override", expected: { ...defaults, model: fixtureOverrideModel },
+    args: ["--model", fixtureOverrideModel], failure: "MODEL_OVERRIDE_NOT_INHERITED" },
   { id: "provider-override", expected: { ...defaults, provider: "local_override", endpoint: "override" },
     args: ["-c", 'model_provider="local_override"'], failure: "PROVIDER_OVERRIDE_NOT_INHERITED" },
 ];
@@ -176,7 +176,7 @@ async function runCase(test) {
 
 function equal(actual, expected) { return ["model", "provider", "endpoint"].every((key) => actual[key] === expected[key]); }
 function safeValues(value) {
-  const allowed = { model: ["gpt-5.4", "gpt-5.4-mini"], provider: ["local_native", "local_override"], endpoint: ["default", "override"] };
+  const allowed = { model: [fixtureModel, fixtureOverrideModel], provider: ["local_native", "local_override"], endpoint: ["default", "override"] };
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, allowed[key].includes(item) ? item : "unexpected"]));
 }
 function alive(pid) {

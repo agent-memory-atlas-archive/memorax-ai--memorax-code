@@ -4,7 +4,7 @@ import { access, readFile, readdir, realpath } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
-import { createNativeHarness, fixtureKey, fixtureUser, sendResponses, waitFor } from "./codex-native-support.mjs";
+import { createNativeHarness, fixtureKey, fixtureModel, fixtureReviewerModel, fixtureUser, sendResponses, waitFor } from "./codex-native-support.mjs";
 import { assertCompleteText, assertNoForeignContent, assertWritebackMessages, selectNativeTurnContent } from "./codex-native-content-check.mjs";
 
 // Native app-server protocol, checked with baseline and latest Codex. The fixtures only
@@ -41,8 +41,9 @@ try {
   harness.setModelHandler((body, response) => {
     check(current, "UNEXPECTED_MODEL_REQUEST_OUTSIDE_CASE");
     check(++current.modelRequests <= 8, "MODEL_REQUEST_LIMIT_EXCEEDED");
-    if (body.generate === false) return sendResponses(response, { output: [] });
     const guardian = body.client_metadata?.["x-openai-subagent"] === "guardian";
+    check(body.model === (guardian ? fixtureReviewerModel : fixtureModel), "PERMISSION_MODEL_SUBSTITUTION");
+    if (body.generate === false) return sendResponses(response, { output: [] });
     if (guardian) {
       check(current.test.reviewer === "auto_review", "UNEXPECTED_NATIVE_REVIEWER");
       current.guardianRequests++;
@@ -256,7 +257,7 @@ async function verifyWriteback({ threadId, turnId, completed }) {
   check(contexts.length > 0, "PERMISSION_NATIVE_CONTEXT_MISSING");
   const workspace = await realpath(harness.workspace);
   for (const context of contexts) {
-    check(context.payload.turn_id === turnId && context.payload.model === "gpt-5.4"
+    check(context.payload.turn_id === turnId && context.payload.model === fixtureModel
       && await realpath(context.payload.cwd) === workspace, "PERMISSION_NATIVE_CONTEXT_MISMATCH");
   }
   if (!completed) {

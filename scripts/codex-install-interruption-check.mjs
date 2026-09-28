@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
-import { createNativeHarness, sendResponses, stopNativeProcessTree, waitFor } from "./codex-native-support.mjs";
+import { createNativeHarness, fixtureModel, sendResponses, stopNativeProcessTree, waitFor } from "./codex-native-support.mjs";
 import { assertCredentialNotEchoed, assertProtectedConfiguration, snapshotProtectedConfiguration } from "./codex-lifecycle-assertions.mjs";
 
 const report = { status: "FAIL", suite: "native_setup_interruption", platform: process.platform,
@@ -150,8 +150,11 @@ async function runCase(phase) {
     check(completion?.completedByVersion === manifest.version, "SETUP_RETRY_COMPLETION_MISSING");
     const status = JSON.parse((await harness.runProduct(["status", "--clients", "codex", "--json"])).stdout);
     check(status.ok === true && status.backend?.ok === true && status.codexAdapter?.ok === true, "SETUP_RETRY_NOT_READY");
-    harness.setModelHandler((_body, response) => sendResponses(response, { output: [{ type: "message", role: "assistant", phase: "final_answer",
-      content: [{ type: "output_text", text: "Interrupted setup recovery fixture completed." }] }] }));
+    harness.setModelHandler((body, response) => {
+      check(body.model === fixtureModel, "RECOVERY_MODEL_SUBSTITUTION");
+      sendResponses(response, { output: [{ type: "message", role: "assistant", phase: "final_answer",
+        content: [{ type: "output_text", text: "Interrupted setup recovery fixture completed." }] }] });
+    });
     const native = await harness.runCodex(["exec", "--strict-config", "--ignore-rules", "--skip-git-repo-check", "--json", "Check the recovered setup fixture."]);
     const events = native.stdout.trim().split(/\r?\n/).map(JSON.parse);
     const session = events.find((event) => event.type === "thread.started")?.thread_id;

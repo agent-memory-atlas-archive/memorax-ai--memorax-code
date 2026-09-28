@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { basename, delimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { check, createNativeHarness, fixtureKey, fixtureUser, searchResult, sendResponses, stopNativeProcessTree, waitFor } from "./codex-native-support.mjs";
+import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, searchResult, sendResponses, stopNativeProcessTree, waitFor } from "./codex-native-support.mjs";
 import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
   assertWritebackMessages, expectedSearchAnswer, redactExpectedFixtureText, selectNativeTurnContent } from "./codex-native-content-check.mjs";
 
@@ -177,7 +177,7 @@ try {
   report.skillExecutionMode = "scripted model commands; natural-language instruction following is not evaluated";
   report.explicitMemoryScope = { requestsValidated: 5, scope: "workspace-name.v1", searchSessionField: "absent",
     directAddSessionSource: "--session-id", nativeSkillScopeSource: "CODEX_THREAD_ID", nativeSkillAddSessionSource: "memorax-cli default" };
-  report.model = "gpt-5.4";
+  report.model = fixtureModel;
   report.provider = "local_native";
 } catch (error) {
   report.stage = stage;
@@ -200,7 +200,7 @@ async function turn({ prompt, answer, sessionId, cwd = harness.workspace, expect
   let step = 0;
   const beforeMemory = harness.memoryRequests.length;
   harness.setModelHandler(async (body, response) => {
-    check(body.model === "gpt-5.4", "NATIVE_MODEL_SUBSTITUTION");
+    check(body.model === fixtureModel, "NATIVE_MODEL_SUBSTITUTION");
     check(step < steps.length, "UNEXPECTED_NATIVE_MODEL_CONTINUATION");
     await steps[step++](body, response);
   });
@@ -271,7 +271,7 @@ async function verifyNativeRollouts() {
     for (const start of starts) { check(typeof start.payload.turn_id === "string", "NATIVE_TURN_ID_MISSING"); turnIds.add(start.payload.turn_id); }
     const workspaces = await Promise.all(expected.map((turn) => realpath(turn.cwd)));
     for (const context of records.filter((record) => record.type === "turn_context")) {
-      check(context.payload.model === "gpt-5.4" && workspaces.includes(await realpath(context.payload.cwd)), "NATIVE_ROLLOUT_CONTEXT_MISMATCH");
+      check(context.payload.model === fixtureModel && workspaces.includes(await realpath(context.payload.cwd)), "NATIVE_ROLLOUT_CONTEXT_MISMATCH");
     }
     for (const [index, turn] of expected.entries()) {
       const selected = selectNativeTurnContent(records, { sessionId: turn.sessionId, turnId: starts[index].payload.turn_id });
@@ -336,7 +336,7 @@ async function verifyBackgroundGlobalConfiguration() {
       "--no-gpg-sign", "--quiet", "-m", "test: native model inheritance fixture"]);
     await background.setup();
     background.setModelHandler((body, response) => {
-      check(body.model === "gpt-5.4", "BACKGROUND_MODEL_SUBSTITUTION");
+      check(body.model === fixtureModel, "BACKGROUND_MODEL_SUBSTITUTION");
       const kind = inputText(body).includes("This invocation is the authorized background repo-memory worker.") ? "background" : "foreground";
       received[kind] += 1;
       check(received[kind] === 1, "UNEXPECTED_BACKGROUND_MODEL_CONTINUATION");
@@ -371,7 +371,7 @@ async function verifyBackgroundGlobalConfiguration() {
       ids.add(metadata.id);
       const contexts = records.filter((record) => record.type === "turn_context");
       check(contexts.length >= 1, "BACKGROUND_NATIVE_CONTEXT_MISSING");
-      for (const context of contexts) check(context.payload.model === "gpt-5.4"
+      for (const context of contexts) check(context.payload.model === fixtureModel
         && await realpath(context.payload.cwd) === repository, "BACKGROUND_NATIVE_CONTEXT_MISMATCH");
       observedPermissions[metadata.id === foregroundId ? "foreground" : "background"] = contexts.map(({ payload }) => {
         check(["untrusted", "on-failure", "on-request", "never"].includes(payload.approval_policy), "BACKGROUND_NATIVE_APPROVAL_POLICY_UNSUPPORTED");
@@ -396,7 +396,7 @@ async function verifyBackgroundGlobalConfiguration() {
     }
     check(ids.size === 2 && ids.has(foregroundId) && workerObserved, "BACKGROUND_NATIVE_WORKER_IDENTITY_MISSING");
     await waitFor(() => [...ownedPids].every((pid) => !processAlive(pid)), "BACKGROUND_PROCESS_REMAINS");
-    return { status: "PASS", codexVersion: background.codexVersion, model: "gpt-5.4", provider: "local_native", foregroundRequests: 1, backgroundRequests: 1,
+    return { status: "PASS", codexVersion: background.codexVersion, model: fixtureModel, provider: "local_native", foregroundRequests: 1, backgroundRequests: 1,
       distinctNativeSessions: 2, jobStatus: "failed", expectedFailure: "artifact_validation_failed",
       repoMemoryBuildValidated: false, modelOverrideInheritanceValidated: false,
       permissionInheritanceValidated: false, observedPermissions, workerContent };

@@ -399,7 +399,14 @@ but reject account replacement, lost disablement and accidental permanent opt-ou
 The native conversation check runs real Codex against a local, deterministic
 Responses server and a separate MemoraX receiver. Native Codex creates its own
 session, Turn, rollout, and Hook events; the test must not synthesize these as
-proof of a native workflow. Assertions compare actual outgoing requests with independently selected native
+proof of a native workflow. The shared native harness supplies synthetic model
+IDs and a fixed `model_catalog_json` in its isolated Codex home, including an
+explicit auto-review model. This keeps the controlled fixtures independent of
+changes to Codex's bundled model catalog. Baseline and latest CLI checks still
+validate catalog compatibility, actual model routing, and native execution;
+they do not establish availability of any hosted model. Native error assertions
+remain strict.
+Assertions compare actual outgoing requests with independently selected native
 source records under the current extraction contract. Automatic Add must have
 valid message fields, nonempty content, and the complete selected text; additional
 content is allowed. The checks retain exact session/Turn identity, request counts,

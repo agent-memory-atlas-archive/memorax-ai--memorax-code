@@ -12,6 +12,9 @@ const otherClients = ["claude", "dsh", "opencode", "codebuddy", "workbuddy", "tr
 export const fixtureKey = `sk_${"E".repeat(43)}`;
 export const fixtureUser = "native-fixture-user";
 export const searchResult = "NATIVE_MEMORY_SEARCH_RESULT";
+export const fixtureModel = "memorax-native-fixture";
+export const fixtureOverrideModel = "memorax-native-override";
+export const fixtureReviewerModel = "memorax-native-reviewer";
 
 export function check(condition, code) {
   if (!condition) throw Object.assign(new Error(code), { nativeCode: code });
@@ -58,8 +61,23 @@ export async function createNativeHarness({ packageRoot, codexCommand, label = "
       memoryUrl: memoryServer.url, writeback });
     await writeFile(join(stateHome, "config.toml"), ["[clients]", "codex = true",
       ...otherClients.map((client) => `${client} = false`), "[jev]", "enabled = false", ""].join("\n"), { mode: 0o600 });
+    // Keep local Responses fixtures independent of Codex's bundled model catalog.
+    const modelCatalogPath = join(codexHome, "native-model-catalog.json");
+    await writeFile(modelCatalogPath, JSON.stringify({ models:
+      [fixtureModel, fixtureOverrideModel, fixtureReviewerModel].map((slug) => ({
+        slug, display_name: slug, default_reasoning_level: "low",
+        supported_reasoning_levels: [{ effort: "low", description: "Controlled fixture" }],
+        shell_type: "unified_exec", tool_mode: "direct", visibility: "list", supported_in_api: true, priority: 0,
+        support_verbosity: false, supports_parallel_tool_calls: true,
+        supports_reasoning_summary_parameter: true, default_reasoning_summary: "auto", context_window: 128000,
+        truncation_policy: { mode: "tokens", limit: 10000 }, experimental_supported_tools: [], input_modalities: ["text"],
+        include_skills_usage_instructions: true, include_plugin_usage_instructions: true, include_apps_usage_instructions: true,
+        model_messages: { instructions_template: "You are a controlled native integration test fixture." },
+        ...(slug === fixtureReviewerModel ? {} : { auto_review_model_override: fixtureReviewerModel }),
+      })) }), { mode: 0o600 });
     await writeFile(join(codexHome, "config.toml"), [
-      'model = "gpt-5.4"', 'model_provider = "local_native"', 'model_reasoning_effort = "low"',
+      `model = ${JSON.stringify(fixtureModel)}`, `model_catalog_json = ${JSON.stringify(modelCatalogPath)}`,
+      'model_provider = "local_native"', 'model_reasoning_effort = "low"',
       'cli_auth_credentials_store = "file"', 'approval_policy = "never"', 'sandbox_mode = "danger-full-access"',
       'web_search = "disabled"', 'project_doc_max_bytes = 0',
       "[features]", "shell_snapshot = false", "remote_models = false", "responses_websockets = false",
