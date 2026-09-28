@@ -336,6 +336,7 @@ async function verifyBackgroundGlobalConfiguration() {
     result.stage = backgroundStage;
     result.error = error.nativeCode ?? "BACKGROUND_CHECK_FAILED_PRIVATE_OUTPUT_SUPPRESSED";
     result.errorDetails = describeSafeError(error);
+    result.nativeServerInitialization = await server?.diagnostics();
     result.foregroundRequests = received.foreground;
     result.backgroundRequests = received.background;
     result.receiverErrors = background?.serverErrors ?? [];

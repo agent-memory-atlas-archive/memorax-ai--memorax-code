@@ -173,6 +173,7 @@ try {
   report.stage = stage;
   report.error = error.nativeCode ?? "SERVER_CHECK_FAILED_PRIVATE_OUTPUT_SUPPRESSED";
   report.errorDetails = describeSafeError(error);
+  report.nativeServerInitialization = await server?.diagnostics();
   report.receiverErrors = harness?.serverErrors ?? [];
   if (current) report.activeCase = { modelRequests: current.modelRequests, nativeServersStarted: current.spawns.length,
     observedHttpStatuses: current.requests.map((entry) => entry.status ?? "transport_failure") };

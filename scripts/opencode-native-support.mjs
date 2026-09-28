@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createServer as createTcpServer } from "node:net";
@@ -46,6 +47,79 @@ export function describeSafeError(error) {
   if (safeOperations.has(error?.nativeOperation)) result.operation = error.nativeOperation;
   if (safeOperations.has(error?.cleanupOperation)) result.cleanupOperation = error.cleanupOperation;
   return result;
+}
+
+export function createServerInitializationDiagnostics({ configDir, stateDir, pid, version }) {
+  const milestones = { configDirectoryReached: false, dependencyInstallFailed: false, postPluginReached: false };
+  const markers = new Map([
+    ["loading config from OPENCODE_CONFIG_DIR", "configDirectoryReached"],
+    ["background dependency install failed", "dependencyInstallFailed"],
+    ["all LSPs are disabled", "postPluginReached"],
+    ["all formatters are disabled", "postPluginReached"],
+  ]);
+  const listeningMessage = "opencode server listening on";
+  let listeningSeen = false, stdoutTail = "", stderrLine = "", discardLine = false;
+  const lock = join(stateDir, "locks", `${createHash("sha1").update(`npm-install:${configDir}`).digest("hex")}.lock`);
+  return {
+    get listeningSeen() { return listeningSeen; },
+    stdout(chunk) {
+      if (listeningSeen) return;
+      const text = stdoutTail + chunk;
+      listeningSeen = text.includes(listeningMessage);
+      stdoutTail = listeningSeen ? "" : text.slice(-(listeningMessage.length - 1));
+    },
+    stderr(chunk) {
+      const lines = String(chunk).split("\n");
+      for (let index = 0; index < lines.length; index++) {
+        if (!discardLine) {
+          if (Buffer.byteLength(stderrLine) + Buffer.byteLength(lines[index]) > 8192) { stderrLine = ""; discardLine = true; }
+          else stderrLine += lines[index];
+        }
+        if (index === lines.length - 1) continue;
+        if (!discardLine) {
+          // Upstream emits logfmt; only its leading message field can identify a milestone.
+          const match = /^timestamp=\S+ level=\S+ run=\S+ message=("(?:[^"\\]|\\.)*"|[^\s]+)(?:\s|$)/.exec(stderrLine);
+          if (match) {
+            try {
+              const marker = markers.get(match[1].startsWith('"') ? JSON.parse(match[1]) : match[1]);
+              if (marker) milestones[marker] = true;
+            } catch {}
+          }
+        }
+        stderrLine = ""; discardLine = false;
+      }
+    },
+    async snapshot() {
+      const plugin = await diagnosticJson(join(configDir, "node_modules", "@opencode-ai", "plugin", "package.json"));
+      const packageLock = await diagnosticJson(join(configDir, "package-lock.json"));
+      const lockMeta = await diagnosticJson(join(lock, "meta.json"));
+      const matchesVersion = (file, actual) => file.present === false ? false
+        : typeof version === "string" && typeof actual === "string" ? actual === version : "unknown";
+      return { milestones: { ...milestones }, dependencies: {
+        packageJson: await diagnosticExists(join(configDir, "package.json")),
+        nodeModules: await diagnosticExists(join(configDir, "node_modules"), true),
+        pluginPackage: plugin.present,
+        pluginVersionMatches: matchesVersion(plugin, plugin.value?.version),
+        packageLock: packageLock.present,
+        lockPluginVersionMatches: matchesVersion(packageLock, packageLock.value?.packages?.["node_modules/@opencode-ai/plugin"]?.version),
+        npmInstallLock: await diagnosticExists(lock, true),
+        npmInstallLockOwnedByServer: lockMeta.present === false ? false
+          : Number.isInteger(lockMeta.value?.pid) && Number.isInteger(pid) ? lockMeta.value.pid === pid : "unknown",
+      } };
+    },
+  };
+}
+
+async function diagnosticExists(path, directory = false) {
+  try { const info = await stat(path); return directory ? info.isDirectory() : info.isFile(); }
+  catch (error) { return error.code === "ENOENT" ? false : "unknown"; }
+}
+async function diagnosticJson(path) {
+  let text;
+  try { text = await readFile(path, "utf8"); }
+  catch (error) { return { present: error.code === "ENOENT" ? false : "unknown" }; }
+  try { return { present: true, value: JSON.parse(text) }; }
+  catch { return { present: true }; }
 }
 
 export function assertNoSensitivePayload(body, forbidden) {
@@ -184,15 +258,16 @@ export async function createNativeHarness({ packageRoot, openCodeCommand, label 
   }
   async function startOpenCodeServer(options = {}) {
     const port = await freePort();
-    const child = spawnOpenCode(["serve", "--hostname=127.0.0.1", `--port=${port}`], options);
+    const child = spawnOpenCode(["serve", "--hostname=127.0.0.1", `--port=${port}`, "--print-logs", "--log-level=DEBUG"], options);
     child.stdin.end();
-    let output = "";
-    const capture = (chunk) => { output = `${output}${chunk}`.slice(-8192); };
-    child.stdout.on("data", capture);
-    child.stderr.on("data", capture);
+    const diagnostics = createServerInitializationDiagnostics({ configDir: openCodeConfigDir,
+      stateDir: join(env.XDG_STATE_HOME, "opencode"), pid: child.pid, version: nativeVersion });
+    child.stdout.on("data", diagnostics.stdout);
+    child.stderr.on("data", diagnostics.stderr);
     const url = `http://127.0.0.1:${port}`;
     const headers = { authorization: `Basic ${Buffer.from(`${env.OPENCODE_SERVER_USERNAME}:${env.OPENCODE_SERVER_PASSWORD}`).toString("base64")}` };
     const server = { url, baseUrl: url, headers, process: child, cwd: options.cwd ?? workspace,
+      diagnostics: diagnostics.snapshot,
       async close() {
         let operation = "NATIVE_SERVER_STOP";
         try {
@@ -208,7 +283,7 @@ export async function createNativeHarness({ packageRoot, openCodeCommand, label 
     defaultServer = server;
     await waitFor(async () => {
       check(child.exitCode === null && child.signalCode === null, "NATIVE_OPENCODE_SERVER_EXITED");
-      if (!output.includes("opencode server listening on")) return false;
+      if (!diagnostics.listeningSeen) return false;
       return fetch(`${url}/global/health`, { headers, signal: AbortSignal.timeout(1000) })
         .then((response) => response.ok, () => false);
     }, "NATIVE_OPENCODE_SERVER_START_TIMEOUT", 30_000);
