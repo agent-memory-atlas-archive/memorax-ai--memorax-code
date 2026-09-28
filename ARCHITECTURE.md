@@ -1155,6 +1155,12 @@ contract coverage, not real-client E2E results.
 | Trae | Validated Turn-ID and correlated `UserPromptSubmit`/`Stop` Hook pair | [Trae](packages/ts/memorax-code-backend/test/clients/trae) | [Trae adapter](packages/ts/memorax-code-trae-adapter/test) |
 | Cursor | Correlated native SQLite turn/steps, completed Stop, and matching final-response digest | [Cursor](packages/ts/memorax-code-backend/test/clients/cursor) | [Cursor adapter](packages/ts/memorax-code-cursor-adapter/test) |
 
+Codex selects messages using the rollout Session header and local Turn lifecycle
+boundaries. Assistant passthrough metadata may retain a provider turn ID; it
+does not select or replace the local Turn, and a difference alone does not
+reject its final response. Conflicting user-message metadata and mismatched
+client, Session, or Turn identities in the local coordinator still fail closed.
+
 ### 6.2 State classes and shutdown ownership
 
 Ephemeral process state includes active HTTP requests, turn coordination,
