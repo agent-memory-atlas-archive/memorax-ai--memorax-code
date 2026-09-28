@@ -239,16 +239,20 @@ test("stop reports PID authority cleanup IO failure after stopping the process",
 
 test("failed health startup terminates the spawned process and removes PID state", async () => {
   const home = await mkdtemp(join(tmpdir(), "memorax-code-backend-health-timeout-"));
-  const occupied = createServer((_request, response) => {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end('{"ok":true,"service":"not-memorax-code"}');
-  });
-  const port = await listen(occupied);
+  let healthProbes = 0;
   try {
-    const result = await startBackendService({ home, port, timeoutMs: 200 }, {
+    const result = await startBackendService({ home, port: 18789, timeoutMs: 200 }, {
+      // Exercise identity-failure cleanup without depending on local HTTP timing.
+      fetch: async () => {
+        healthProbes += 1;
+        return new Response('{"ok":true,"service":"not-memorax-code"}', {
+          status: 200, headers: { "content-type": "application/json" },
+        });
+      },
       // Keep the child alive so this exercises deadline cleanup, not early exit.
       spawnProcess: (_command, _args, options) => spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], options),
     });
+    assert.ok(healthProbes > 0);
     assert.equal(result.ok, false);
     assert.match(result.error, /did not become healthy/);
     assert.equal(result.errorCode, "BACKEND_HEALTH_NOT_READY");
@@ -258,7 +262,6 @@ test("failed health startup terminates the spawned process and removes PID state
     assert.equal(result.processState, "stopped");
     assert.equal(readBackendServiceState({ home }), undefined);
   } finally {
-    await new Promise((resolve) => occupied.close(resolve));
     await rm(home, { recursive: true, force: true });
   }
 });
