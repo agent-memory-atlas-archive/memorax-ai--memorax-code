@@ -118,6 +118,10 @@ jobs:
         env:
           CODEX_VERSION: ${{ matrix.codex }}
         run: scripts/codex-install-check.sh dist/npm/tarballs "$CODEX_VERSION"
+      - name: Verify Windows user PATH cleanup on success, failure and interruption
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/codex-install-user-path.test.ps1
       - name: Verify lifecycle, native writeback, permissions and inheritance (Windows)
         if: runner.os == 'Windows'
         shell: pwsh

@@ -466,6 +466,14 @@ then use a disposable PowerShell 7 session with Node.js and npm on PATH:
 ./scripts/codex-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodexVersion 0.147.0 -PreviousVersion 0.1.17
 ```
 
+The Windows wrapper removes its temporary npm directory from the user PATH in
+`finally`, including on failure and catchable interruption. It preserves other
+entries observed during cleanup instead of restoring an old PATH snapshot.
+Avoid running other installers that modify the user PATH at the same time:
+Windows environment reads and writes are not atomic, so cleanup cannot guarantee
+preservation of concurrent changes. Forcefully terminating PowerShell or
+shutting down the machine can prevent this cleanup from running.
+
 The wrappers accept a resolved stable Codex version, verify the installed version,
 install the test-only `node-pty@1.1.0` terminal dependency, then run
 the lifecycle, native-conversation, and permission checks.

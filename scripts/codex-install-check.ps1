@@ -19,6 +19,8 @@ New-Item -ItemType Directory -Force $userRoot, $tempRoot, $prefix | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $testRoot 'codex') | Out-Null
 [IO.File]::WriteAllText((Join-Path $prefix ".memorax-code-ci-owned"), "codex-install-check`n")
 
+. (Join-Path $PSScriptRoot 'codex-install-user-path.ps1')
+Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
 # This step owns its temporary account state; do not change machine settings.
 $allowedEnvironment = @('PATH', 'SystemRoot', 'WINDIR', 'ComSpec', 'PATHEXT',
   'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'PSModulePath',
@@ -74,3 +76,4 @@ if ($regressionFailed) { throw 'One or more interruption or model/provider inher
 
 # Remove the runtime only after the smoke has confirmed process shutdown.
 Remove-Item -LiteralPath $testRoot -Recurse -Force
+}

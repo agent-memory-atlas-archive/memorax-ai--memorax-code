@@ -247,7 +247,8 @@ function isolatedEnv({ root, home, stateHome, codexHome, codexCommand, packageRo
     CURSOR_HOME: join(home, ".cursor"),
   };
   if (process.platform === "win32") Object.assign(env, { SystemRoot: windowsRoot, WINDIR: windowsRoot,
-    ComSpec: join(windowsRoot, "System32", "cmd.exe"), PATHEXT: ".COM;.EXE;.BAT;.CMD", USERNAME: "native-fixture" });
+    ComSpec: join(windowsRoot, "System32", "cmd.exe"), PATHEXT: ".COM;.EXE;.BAT;.CMD", USERNAME: "native-fixture",
+    npm_config_prefix: packageBin });
   for (const client of otherClients) {
     env[`MEMORAX_CODE_${client.toUpperCase()}_COMMAND`] = join(root, "unused-client");
     env[`MEMORAX_CODE_${client.toUpperCase()}_TRACE_ENABLED`] = "false";
