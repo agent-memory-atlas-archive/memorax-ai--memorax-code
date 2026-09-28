@@ -11,6 +11,20 @@ const execFileAsync = promisify(execFile);
 const otherClients = ["codex", "claude", "dsh", "codebuddy", "workbuddy", "trae", "cursor"];
 const signalCleanups = new Set();
 const signalHandlers = new Map(["SIGINT", "SIGTERM"].map((signal) => [signal, () => handleSignal(signal)]));
+const safeErrorNames = new Set(["Error", "TypeError", "RangeError", "SyntaxError", "AbortError", "TimeoutError", "AggregateError"]);
+const safeErrorCodes = new Set([
+  "ABORT_ERR", "ENOENT", "ENOEXEC", "EACCES", "EPERM", "EINVAL", "ETIMEDOUT", "ECONNREFUSED", "ECONNRESET",
+  "ECONNABORTED", "EPIPE", "EADDRINUSE", "EADDRNOTAVAIL", "ENOTFOUND", "EAI_AGAIN", "EBUSY", "ENOTEMPTY",
+  "ENOTDIR", "EISDIR", "EMFILE", "ENFILE", "ENOSPC", "EIO", "EROFS", "ESRCH", "ERR_INVALID_ARG_TYPE",
+  "ERR_INVALID_URL", "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT", "UND_ERR_SOCKET", "UND_ERR_ABORTED", "UND_ERR_DESTROYED", "UND_ERR_CLOSED",
+]);
+const safeOperations = new Set([
+  "SDK_REQUEST", "SDK_RESPONSE_READ", "SDK_RESPONSE_JSON", "BEFORE_CLOSE", "BACKEND_PID_READ", "REPO_JOBS_READ",
+  "REPO_JOB_READ", "REPO_WORKER_STOP", "NATIVE_SERVER_STOP", "NATIVE_SERVER_PORT_RELEASE", "CHILD_PROCESS_STOP",
+  "BACKEND_STOP", "BACKEND_PROCESS_EXIT", "BACKEND_RECORD_REMOVAL", "BACKEND_PORT_RELEASE", "RECEIVERS",
+  "TEMPORARY_STATE", "PROCESS_ALIVE", "TASKKILL", "PROCESS_SIGNAL", "PROCESS_EXIT",
+]);
 let receivedSignal;
 export const openCodeVersion = "1.18.18";
 export const fixtureKey = `sk_${"E".repeat(43)}`;
@@ -21,6 +35,17 @@ export const searchResult = "NATIVE_MEMORY_SEARCH_RESULT";
 
 export function check(condition, code) {
   if (!condition) throw Object.assign(new Error(code), { nativeCode: code });
+}
+
+export function describeSafeError(error) {
+  const result = {};
+  const safeCode = (value) => safeErrorCodes.has(value) || (Number.isInteger(value) && value >= 0 && value <= 255);
+  if (safeErrorNames.has(error?.name)) result.name = error.name;
+  if (safeCode(error?.code)) result.code = error.code;
+  if (safeCode(error?.cause?.code)) result.causeCode = error.cause.code;
+  if (safeOperations.has(error?.nativeOperation)) result.operation = error.nativeOperation;
+  if (safeOperations.has(error?.cleanupOperation)) result.cleanupOperation = error.cleanupOperation;
+  return result;
 }
 
 export function assertNoSensitivePayload(body, forbidden) {
@@ -169,9 +194,13 @@ export async function createNativeHarness({ packageRoot, openCodeCommand, label 
     const headers = { authorization: `Basic ${Buffer.from(`${env.OPENCODE_SERVER_USERNAME}:${env.OPENCODE_SERVER_PASSWORD}`).toString("base64")}` };
     const server = { url, baseUrl: url, headers, process: child, cwd: options.cwd ?? workspace,
       async close() {
-        await stopNativeProcessTree(child, env);
-        await assertPortReleased(port);
-        nativeServers.delete(server);
+        let operation = "NATIVE_SERVER_STOP";
+        try {
+          await stopNativeProcessTree(child, env);
+          operation = "NATIVE_SERVER_PORT_RELEASE";
+          await assertPortReleased(port);
+          nativeServers.delete(server);
+        } catch (error) { error.nativeOperation ??= operation; throw error; }
       },
       async request(path, requestOptions) { return sdkRequest(path, { ...requestOptions, server }); } };
     server.stop = server.close;
@@ -191,39 +220,55 @@ export async function createNativeHarness({ packageRoot, openCodeCommand, label 
     const url = new URL(path, server.url ?? server);
     check(url.hostname === "127.0.0.1" && url.protocol === "http:", "NATIVE_SDK_NOT_LOOPBACK");
     if (!url.searchParams.has("directory")) url.searchParams.set("directory", options.cwd ?? server.cwd ?? workspace);
-    const response = await fetch(url, { method: options.method ?? "GET",
-      headers: { ...server.headers, ...(options.body === undefined ? {} : { "content-type": "application/json" }), ...options.headers },
-      ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
-      signal: options.signal ?? AbortSignal.timeout(options.timeoutMs ?? 60_000) });
-    if (options.raw) return response;
-    check(response.ok, `NATIVE_SDK_HTTP_${response.status}`);
-    const text = await response.text();
-    return text ? JSON.parse(text) : undefined;
+    let operation = "SDK_REQUEST";
+    try {
+      const response = await fetch(url, { method: options.method ?? "GET",
+        headers: { ...server.headers, ...(options.body === undefined ? {} : { "content-type": "application/json" }), ...options.headers },
+        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+        signal: options.signal ?? AbortSignal.timeout(options.timeoutMs ?? 60_000) });
+      if (options.raw) return response;
+      check(response.ok, `NATIVE_SDK_HTTP_${response.status}`);
+      operation = "SDK_RESPONSE_READ";
+      const text = await response.text();
+      operation = "SDK_RESPONSE_JSON";
+      return text ? JSON.parse(text) : undefined;
+    } catch (error) { error.nativeOperation ??= operation; throw error; }
   }
   function close() {
     return closePromise ??= closeResources();
   }
   async function closeResources() {
     let cleanupError;
-    let cleanupStage = "CHILD_PROCESSES";
+    let cleanupStage = "BEFORE_CLOSE";
     try { await beforeClose?.(); }
-    catch (error) { error.nativeCode ??= "NATIVE_BEFORE_CLOSE_FAILED"; cleanupError = error; }
+    catch (error) {
+      error.nativeCode ??= "NATIVE_BEFORE_CLOSE_FAILED";
+      error.cleanupOperation ??= cleanupStage;
+      cleanupError = error;
+    }
     try {
+      cleanupStage = "BACKEND_PID_READ";
       const current = await readFile(join(stateHome, "runtime", "backend", "backend.pid.json"), "utf8")
         .then(JSON.parse).catch((error) => { if (error.code === "ENOENT") return undefined; throw error; });
       if (Number.isInteger(current?.pid) && current.pid > 0) backendPids.add(current.pid);
+      cleanupStage = "REPO_JOBS_READ";
       const jobFiles = await readdir(join(stateHome, "repo-memory-jobs"), { recursive: true }).catch((error) => {
         if (error.code === "ENOENT") return []; throw error;
       });
       for (const file of jobFiles.filter((file) => file.endsWith("job.json"))) {
+        cleanupStage = "REPO_JOB_READ";
         const job = JSON.parse(await readFile(join(stateHome, "repo-memory-jobs", file), "utf8"));
+        cleanupStage = "REPO_WORKER_STOP";
         for (const pid of [job.workerPid, job.childPid]) if (Number.isInteger(pid) && pid > 0 && processAlive(pid)) {
           await stopNativeProcessTree({ pid }, env);
         }
       }
+      cleanupStage = "NATIVE_SERVER_STOP";
       await Promise.all([...nativeServers].map((server) => server.close()));
+      cleanupStage = "CHILD_PROCESS_STOP";
       await Promise.all([...children].map((child) => stopNativeProcessTree(child, env)));
       if (setupStarted || backendPids.size) {
+        cleanupStage = "BACKEND_PID_READ";
         const pidPath = join(stateHome, "runtime", "backend", "backend.pid.json");
         const current = await readFile(pidPath, "utf8").then(JSON.parse).catch((error) => {
           if (error.code === "ENOENT") return undefined; throw error;
@@ -233,13 +278,16 @@ export async function createNativeHarness({ packageRoot, openCodeCommand, label 
         const stopped = JSON.parse((await runProduct(["stop", "--clients", "opencode", "--json"],
           { timeoutMs: 15_000, cleanup: true })).stdout);
         check(stopped.ok === true, "NATIVE_BACKEND_STOP_FAILED");
+        cleanupStage = "BACKEND_PROCESS_EXIT";
         for (const pid of backendPids) check(!processAlive(pid), "NATIVE_BACKEND_PROCESS_REMAINS");
+        cleanupStage = "BACKEND_RECORD_REMOVAL";
         check(await stat(pidPath).then(() => false, (error) => error.code === "ENOENT"), "NATIVE_BACKEND_RECORD_REMAINS");
-        cleanupStage = "PORT_RELEASE";
+        cleanupStage = "BACKEND_PORT_RELEASE";
         await assertPortReleased(backendPort);
       }
     } catch (error) {
       error.nativeCode ??= `NATIVE_CLEANUP_${cleanupStage}_FAILED`;
+      error.cleanupOperation ??= cleanupStage;
       cleanupError ??= error;
       for (const child of children) {
         try { await stopNativeProcessTree(child, env); } catch (failure) { cleanupError ??= failure; }
@@ -257,7 +305,11 @@ export async function createNativeHarness({ packageRoot, openCodeCommand, label 
         await Promise.all([memoryServer.close(), modelServer.close()]);
         cleanupStage = "TEMPORARY_STATE";
         if (!cleanupError) await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-      } catch (error) { error.nativeCode ??= `NATIVE_CLEANUP_${cleanupStage}_FAILED`; cleanupError ??= error; }
+      } catch (error) {
+        error.nativeCode ??= `NATIVE_CLEANUP_${cleanupStage}_FAILED`;
+        error.cleanupOperation ??= cleanupStage;
+        cleanupError ??= error;
+      }
       unregisterSignalCleanup();
     }
     if (cleanupError) throw cleanupError;
@@ -299,7 +351,8 @@ function handleSignal(signal) {
     clearTimeout(timeout);
     const failure = results.find((result) => result.status === "rejected");
     console.error(JSON.stringify({ status: "FAIL", signal,
-      cleanup: failure ? failure.reason?.nativeCode ?? "NATIVE_SIGNAL_CLEANUP_FAILED" : "PASS" }));
+      cleanup: failure ? failure.reason?.nativeCode ?? "NATIVE_SIGNAL_CLEANUP_FAILED" : "PASS",
+      ...(failure ? { cleanupErrorDetails: describeSafeError(failure.reason) } : {}) }));
     for (const [name, handler] of signalHandlers) process.off(name, handler);
     process.exit(exitCode);
   });
@@ -339,21 +392,30 @@ export async function waitFor(predicate, code = "NATIVE_WAIT_TIMEOUT", timeout =
   check(false, code);
 }
 export function processAlive(pid) {
-  try { process.kill(pid, 0); return true; } catch (error) { if (error.code === "ESRCH") return false; throw error; }
+  try { process.kill(pid, 0); return true; } catch (error) {
+    if (error.code === "ESRCH") return false;
+    error.nativeOperation ??= "PROCESS_ALIVE";
+    throw error;
+  }
 }
 export async function stopNativeProcessTree(child, env) {
   if (!child.pid) return;
-  if (process.platform === "win32") {
-    if (!processAlive(child.pid)) return;
-    await execFileAsync(join(env.SystemRoot, "System32", "taskkill.exe"), ["/PID", String(child.pid), "/T", "/F"],
-      { env, windowsHide: true, timeout: 10_000 }).catch((error) => { if (processAlive(child.pid)) throw error; });
-  } else {
-    try { process.kill(-child.pid, "SIGKILL"); } catch (error) {
-      if (error.code !== "ESRCH") throw error;
-      if (processAlive(child.pid)) process.kill(child.pid, "SIGKILL");
+  let operation = "TASKKILL";
+  try {
+    if (process.platform === "win32") {
+      if (!processAlive(child.pid)) return;
+      await execFileAsync(join(env.SystemRoot, "System32", "taskkill.exe"), ["/PID", String(child.pid), "/T", "/F"],
+        { env, windowsHide: true, timeout: 10_000 }).catch((error) => { if (processAlive(child.pid)) throw error; });
+    } else {
+      operation = "PROCESS_SIGNAL";
+      try { process.kill(-child.pid, "SIGKILL"); } catch (error) {
+        if (error.code !== "ESRCH") throw error;
+        if (processAlive(child.pid)) process.kill(child.pid, "SIGKILL");
+      }
     }
-  }
-  await waitFor(() => !processAlive(child.pid), "NATIVE_CHILD_PROCESS_REMAINS", 10_000);
+    operation = "PROCESS_EXIT";
+    await waitFor(() => !processAlive(child.pid), "NATIVE_CHILD_PROCESS_REMAINS", 10_000);
+  } catch (error) { error.nativeOperation ??= operation; throw error; }
 }
 async function requestJson(request) {
   let text = "";

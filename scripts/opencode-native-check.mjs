@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, realpath } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { assertNoSensitivePayload, check, createNativeHarness, fixtureKey, fixtureModel, fixtureProvider, fixtureUser,
+import { assertNoSensitivePayload, check, createNativeHarness, describeSafeError, fixtureKey, fixtureModel, fixtureProvider, fixtureUser,
   processAlive, searchResult, waitFor } from "./opencode-native-support.mjs";
 import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
   assertWritebackMessages, expectedSearchAnswer } from "./codex-native-content-check.mjs";
@@ -206,7 +206,7 @@ try {
 } catch (error) {
   report.stage = stage;
   report.error = error.nativeCode ?? harness?.serverErrors[0] ?? "NATIVE_CHECK_FAILED_PRIVATE_OUTPUT_SUPPRESSED";
-  if (Number.isInteger(error.code)) report.commandExitCode = error.code;
+  report.errorDetails = describeSafeError(error);
   if (harness) {
     report.observedModelRequests = harness.modelRequests.length;
     report.observedMemoryRequests = harness.memoryRequests.length;
@@ -214,7 +214,11 @@ try {
   }
 } finally {
   try { await harness?.close(); report.cleanup = "PASS"; }
-  catch (error) { report.status = "FAIL"; report.cleanup = error.nativeCode ?? "NATIVE_CLEANUP_FAILED"; }
+  catch (error) {
+    report.status = "FAIL";
+    report.cleanup = error.nativeCode ?? "NATIVE_CLEANUP_FAILED";
+    report.cleanupErrorDetails = describeSafeError(error);
+  }
 }
 console.log(JSON.stringify(report, null, 2));
 if (report.status !== "PASS") process.exitCode = 1;
@@ -260,18 +264,23 @@ async function turn({ prompt, answer, sessionId, cwd = harness.workspace, expect
 }
 
 async function verifyBackgroundGlobalConfiguration() {
-  const background = await createNativeHarness({ packageRoot: harness.packageRoot, openCodeCommand: harness.openCodeCommand,
-    label: "background", writeback: false });
-  let server;
+  const result = { status: "FAIL" };
+  report.backgroundGlobalConfiguration = result;
+  let background, server, primaryFailed = false;
+  let backgroundStage = "harness creation";
   const received = { foreground: 0, background: 0 };
   const observedPids = new Set();
   try {
+    background = await createNativeHarness({ packageRoot: harness.packageRoot, openCodeCommand: harness.openCodeCommand,
+      label: "background", writeback: false });
     Object.assign(background.env, { MEMORAX_CODE_REPO_MEMORY_JOB_TIMEOUT_MS: "30000", MEMORAX_CODE_REPO_MEMORY_JOB_KILL_GRACE_MS: "1000" });
+    backgroundStage = "repository setup";
     const git = (args) => background.runCommand(process.platform === "win32" ? "git.exe" : "git",
       ["-c", "core.multiPackIndex=false", ...args]);
     await git(["init", "--quiet"]);
     await git(["-c", "user.name=Native Fixture", "-c", "user.email=native@example.invalid", "commit", "--allow-empty",
       "--no-gpg-sign", "--quiet", "-m", "test: native model inheritance fixture"]);
+    backgroundStage = "installed plugin setup";
     await background.setup();
     background.setModelHandler((body) => {
       check(body.model === fixtureModel, "BACKGROUND_MODEL_SUBSTITUTION");
@@ -281,12 +290,16 @@ async function verifyBackgroundGlobalConfiguration() {
       check(received[kind] === 1, "UNEXPECTED_BACKGROUND_CONTINUATION");
       return { text: kind === "background" ? "BACKGROUND_MODEL_CONFIGURATION_ONLY" : "FOREGROUND_MODEL_CONFIGURATION_ONLY" };
     });
+    backgroundStage = "native server startup";
     server = await background.startOpenCodeServer();
+    backgroundStage = "native parent session creation";
     const foreground = await server.request("/session", { method: "POST", body: { title: "Native background fixture" } });
+    backgroundStage = "native foreground message";
     const answer = await server.request(`/session/${foreground.id}/message`, { method: "POST",
       body: { parts: [{ type: "text", text: "Check the current repository default model configuration." }] } });
     check(answer.info?.providerID === fixtureProvider && answer.info?.modelID === fixtureModel && !answer.info.error,
       "BACKGROUND_FOREGROUND_CONFIGURATION_MISMATCH");
+    backgroundStage = "background job wait";
     const repository = await realpath(background.workspace);
     const jobs = async () => {
       const jobsRoot = join(background.stateHome, "repo-memory-jobs");
@@ -304,6 +317,7 @@ async function verifyBackgroundGlobalConfiguration() {
       const result = await jobs();
       return result.length === 1 && ["failed", "succeeded"].includes(result[0].status) ? result : undefined;
     }, "BACKGROUND_JOB_DID_NOT_FINISH", 45_000);
+    backgroundStage = "background job assertions";
     check(job.status === "failed" && job.failureReason === "artifact_validation_failed" && job.exitCode === 0,
       "BACKGROUND_NOOP_JOB_RESULT_MISMATCH");
     check(received.foreground === 1 && received.background === 1, "BACKGROUND_MODEL_REQUEST_MISSING");
@@ -312,12 +326,28 @@ async function verifyBackgroundGlobalConfiguration() {
     check(workerRequests.length === 1 && typeof job.prompt === "string", "BACKGROUND_JOB_PROMPT_MISSING");
     assertCompleteText(inputText(workerRequests[0].body), job.prompt, "BACKGROUND_FULL_JOB_PROMPT_MISSING");
     check(background.memoryRequests.length === 0 && background.serverErrors.length === 0, "BACKGROUND_UNEXPECTED_MEMORY_ACTIVITY");
+    backgroundStage = "background process exit";
     await waitFor(() => [...observedPids].every((pid) => !processAlive(pid)), "BACKGROUND_PROCESS_REMAINS");
-    return { status: "PASS", model: fixtureModel, provider: fixtureProvider, foregroundRequests: 1, backgroundRequests: 1,
+    return Object.assign(result, { status: "PASS", model: fixtureModel, provider: fixtureProvider, foregroundRequests: 1, backgroundRequests: 1,
       expectedFailure: "artifact_validation_failed", repoMemoryBuildValidated: false,
-      modelOverrideInheritanceValidated: false, permissionInheritanceValidated: false, fixtureArtifactsInjected: false };
+      modelOverrideInheritanceValidated: false, permissionInheritanceValidated: false, fixtureArtifactsInjected: false });
+  } catch (error) {
+    primaryFailed = true;
+    result.stage = backgroundStage;
+    result.error = error.nativeCode ?? "BACKGROUND_CHECK_FAILED_PRIVATE_OUTPUT_SUPPRESSED";
+    result.errorDetails = describeSafeError(error);
+    result.foregroundRequests = received.foreground;
+    result.backgroundRequests = received.background;
+    result.receiverErrors = background?.serverErrors ?? [];
+    throw error;
   } finally {
-    await background.close();
+    try { await background?.close(); result.cleanup = "PASS"; }
+    catch (error) {
+      result.status = "FAIL";
+      result.cleanup = error.nativeCode ?? "BACKGROUND_CLEANUP_FAILED";
+      result.cleanupErrorDetails = describeSafeError(error);
+      if (!primaryFailed) { result.stage = "cleanup"; throw error; }
+    }
   }
 }
 

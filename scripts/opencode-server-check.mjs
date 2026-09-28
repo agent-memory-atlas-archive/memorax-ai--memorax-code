@@ -4,7 +4,7 @@ import { access, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
-  check, createNativeHarness, fixtureModel, processAlive, stopNativeProcessTree, waitFor,
+  check, createNativeHarness, describeSafeError, fixtureModel, processAlive, stopNativeProcessTree, waitFor,
 } from "./opencode-native-support.mjs";
 
 const report = {
@@ -50,6 +50,7 @@ try {
   });
   stage = "native server startup";
   server = await harness.startOpenCodeServer();
+  stage = "native parent session creation";
   const parent = await server.request("/session", { method: "POST", body: { title: "Native server fixture parent" } });
   for (const id of ["server-reuse", "http-error-no-fallback", "native-prompt-error", "transport-fallback"]) {
     stage = id;
@@ -171,6 +172,7 @@ try {
 } catch (error) {
   report.stage = stage;
   report.error = error.nativeCode ?? "SERVER_CHECK_FAILED_PRIVATE_OUTPUT_SUPPRESSED";
+  report.errorDetails = describeSafeError(error);
   report.receiverErrors = harness?.serverErrors ?? [];
   if (current) report.activeCase = { modelRequests: current.modelRequests, nativeServersStarted: current.spawns.length,
     observedHttpStatuses: current.requests.map((entry) => entry.status ?? "transport_failure") };
@@ -178,7 +180,11 @@ try {
   try {
     await harness?.close();
     report.cleanup = "PASS";
-  } catch (error) { report.status = "FAIL"; report.cleanup = error.nativeCode ?? "FAILED_PRIVATE_OUTPUT_SUPPRESSED"; }
+  } catch (error) {
+    report.status = "FAIL";
+    report.cleanup = error.nativeCode ?? "FAILED_PRIVATE_OUTPUT_SUPPRESSED";
+    report.cleanupErrorDetails = describeSafeError(error);
+  }
 }
 console.log(JSON.stringify(report, null, 2));
 if (report.status !== "PASS") process.exitCode = 1;
