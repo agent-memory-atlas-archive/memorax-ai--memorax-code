@@ -94,6 +94,7 @@ Cursor is available when its application or a supported installation path is
 detected, or when `CURSOR_HOME` explicitly selects its configuration root.
 
 On later setup runs, explicit `true` and `false` client choices are preserved.
+This also applies to partial `[clients]` tables that omit `codex` or `claude`.
 A detected client whose field is absent is offered for activation with a
 default of yes; declining records `false`. An absent client that is not
 detected remains absent, while a selected client that is temporarily

@@ -950,10 +950,17 @@ async function readPersistedClientSelection() {
   let clients;
   try {
     clients = parse(readFileSync(path, "utf8"))?.clients;
-    if (!clients || typeof clients !== "object" || typeof clients.codex !== "boolean" || typeof clients.claude !== "boolean") return undefined;
   } catch {
     return undefined;
   }
+  if (clients === undefined) return undefined;
+  const prototype = clients && typeof clients === "object" ? Object.getPrototypeOf(clients) : undefined;
+  if ((prototype !== Object.prototype && prototype !== null)
+    || LIFECYCLE_CLIENT_IDS.some((client) => Object.hasOwn(clients, client) && typeof clients[client] !== "boolean")) {
+    setupFailure("config", { details: { configState: "preserved" } });
+    process.exit(1);
+  }
+  if (!LIFECYCLE_CLIENT_IDS.some((client) => typeof clients[client] === "boolean")) return undefined;
   clients = await resolveCodeBuddyClientSelection(clients, { memoraxCodeHome: memoraxCodeHome() });
   return {
     selected: SETUP_CLIENTS.filter((client) => clients[client] === true),
