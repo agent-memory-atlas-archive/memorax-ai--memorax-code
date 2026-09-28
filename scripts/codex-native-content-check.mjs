@@ -112,9 +112,12 @@ export function selectNativeTurnContent(records, { sessionId, turnId }) {
       const parts = Array.isArray(payload.content) ? payload.content.filter((part) => part?.type === type
         && typeof part.text === "string" && part.text.trim()).map((part) => part.text) : [];
       if (!parts.length) continue;
-      const identity = payload.internal_chat_message_metadata_passthrough;
-      check(!(identity?.turn_id ?? identity?.turnId) || (identity.turn_id ?? identity.turnId) === turnId,
-        "NATIVE_CONTENT_TURN_MISMATCH");
+      // Assistant metadata may retain a provider ID; local boundaries select its turn.
+      if (role === "user") {
+        const identity = payload.internal_chat_message_metadata_passthrough;
+        check(!(identity?.turn_id ?? identity?.turnId) || (identity.turn_id ?? identity.turnId) === turnId,
+          "NATIVE_CONTENT_TURN_MISMATCH");
+      }
       const value = selected(parts.join("\n"), record, "response_item");
       if (role === "user") userResponse = value;
       else assistantResponse = value;
