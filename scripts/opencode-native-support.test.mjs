@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { assertNoSensitivePayload, createServerInitializationDiagnostics, describeSafeError } from "./opencode-native-support.mjs";
+import { assertNoSensitivePayload, createNativeHarness, createServerInitializationDiagnostics, describeSafeError } from "./opencode-native-support.mjs";
 
 for (const forbidden of ["sk_fixtureOnly", "/tmp/native-fixture", "C:\\Users\\fixture\\native-root"]) {
   test(`outbound fixture checks reject ${forbidden.includes("\\") ? "Windows paths" : forbidden.startsWith("/") ? "POSIX paths" : "credentials"}`, () => {
@@ -139,4 +139,48 @@ test("server diagnostics return unknown for unreadable or malformed state withou
   assert.equal(snapshot.dependencies.lockPluginVersionMatches, "unknown");
   assert.equal(snapshot.dependencies.npmInstallLockOwnedByServer, "unknown");
   assert.equal(JSON.stringify(snapshot).includes("PRIVATE_INVALID_JSON"), false);
+});
+
+test("native harness shares only an explicit test cache and ignores ordinary npm cache settings", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-opencode-cache-isolation-"));
+  const names = ["MEMORAX_CODE_TEST_NPM_CACHE", "npm_config_cache", "NPM_CONFIG_CACHE", "ProgramFiles"];
+  const previous = new Map(names.map((name) => [name, process.env[name]]));
+  t.after(async () => {
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+    await rm(root, { recursive: true, force: true });
+  });
+  await mkdir(join(root, "lib"), { recursive: true });
+  await writeFile(join(root, "lib", "windows-cli-invocation.mjs"),
+    'export function resolveWindowsCliInvocation() { throw new Error("Native execution is forbidden in this test"); }\n');
+  await mkdir(join(root, "tools", "Git", "bin"), { recursive: true });
+  await writeFile(join(root, "tools", "Git", "bin", "bash.exe"), "not executed");
+  process.env.ProgramFiles = join(root, "tools");
+  process.env.npm_config_cache = join(root, "personal-lowercase-cache");
+  process.env.NPM_CONFIG_CACHE = join(root, "personal-uppercase-cache");
+  delete process.env.MEMORAX_CODE_TEST_NPM_CACHE;
+  const options = { packageRoot: root, openCodeCommand: process.execPath, ripgrepCommand: process.execPath };
+  const standalone = await createNativeHarness(options);
+  try {
+    assert.equal(standalone.env.npm_config_cache, join(standalone.root, "npm-cache"));
+    assert.equal(Object.hasOwn(standalone.env, "NPM_CONFIG_CACHE"), false);
+  } finally { await standalone.close(); }
+
+  const sharedCache = join(root, "job-npm-cache");
+  await mkdir(sharedCache);
+  await writeFile(join(sharedCache, "owner"), "wrapper-owned");
+  process.env.MEMORAX_CODE_TEST_NPM_CACHE = sharedCache;
+  const shared = await createNativeHarness(options);
+  try {
+    assert.equal(shared.env.npm_config_cache, sharedCache);
+    assert.notEqual(shared.home, standalone.home);
+    assert.notEqual(shared.openCodeConfigDir, standalone.openCodeConfigDir);
+    assert.equal(Object.hasOwn(shared.env, "MEMORAX_CODE_TEST_NPM_CACHE"), false);
+  } finally { await shared.close(); }
+  assert.equal(await readFile(join(sharedCache, "owner"), "utf8"), "wrapper-owned");
+  for (const value of ["relative-cache", ""]) {
+    process.env.MEMORAX_CODE_TEST_NPM_CACHE = value;
+    await assert.rejects(createNativeHarness(options), { nativeCode: "NATIVE_TEST_NPM_CACHE_NOT_ABSOLUTE" });
+  }
 });

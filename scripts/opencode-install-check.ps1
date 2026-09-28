@@ -40,6 +40,7 @@ Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
   $env:MEMORAX_CODE_AUTO_UPDATE = 'false'
   $env:MEMORAX_CODE_INSTALL_WATCHDOG = '0'
   $env:npm_config_cache = Join-Path $testRoot 'npm-cache'
+  $env:MEMORAX_CODE_TEST_NPM_CACHE = $env:npm_config_cache
   $env:TMP = $tempRoot
   $env:TEMP = $tempRoot
 

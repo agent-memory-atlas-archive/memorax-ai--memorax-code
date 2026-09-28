@@ -43,7 +43,8 @@ isolated() {
   env -i PATH="$PATH" HOME="$test_root/user" \
     MEMORAX_CODE_HOME="$test_root/state" OPENCODE_CONFIG_DIR="$test_root/opencode" \
     MEMORAX_CODE_AUTO_UPDATE=false MEMORAX_CODE_INSTALL_WATCHDOG=0 \
-    npm_config_cache="$test_root/npm-cache" TMPDIR="$test_root/tmp" "$@" &
+    npm_config_cache="$test_root/npm-cache" MEMORAX_CODE_TEST_NPM_CACHE="$test_root/npm-cache" \
+    TMPDIR="$test_root/tmp" "$@" &
   active_pid=$!
   local status=0
   wait "$active_pid" || status=$?

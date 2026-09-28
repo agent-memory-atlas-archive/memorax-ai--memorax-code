@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/
 import { createServer } from "node:http";
 import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
@@ -132,6 +132,8 @@ export function assertNoSensitivePayload(body, forbidden) {
 
 export async function createNativeHarness({ packageRoot, openCodeCommand, label = "native", writeback = true, expectedVersion, ripgrepCommand }) {
   check(!receivedSignal, "NATIVE_PROCESS_IS_STOPPING");
+  const npmCache = process.env.MEMORAX_CODE_TEST_NPM_CACHE;
+  check(npmCache === undefined || isAbsolute(npmCache), "NATIVE_TEST_NPM_CACHE_NOT_ABSOLUTE");
   packageRoot = resolve(packageRoot);
   openCodeCommand = resolve(openCodeCommand);
   const { resolveWindowsCliInvocation } = await import(pathToFileURL(join(packageRoot, "lib", "windows-cli-invocation.mjs")));
@@ -175,7 +177,7 @@ export async function createNativeHarness({ packageRoot, openCodeCommand, label 
     }, serverErrors);
     backendPort = await freePort();
     env = isolatedEnv({ root, home, stateHome, openCodeConfigDir, openCodeCommand, backendPort,
-      memoryUrl: memoryServer.url, writeback });
+      memoryUrl: memoryServer.url, writeback, npmCache });
     const rg = ripgrepCommand ? resolve(ripgrepCommand) : await findExecutable(process.platform === "win32" ? "rg.exe" : "rg");
     check(rg && await stat(rg).then((info) => info.isFile(), () => false), "NATIVE_RIPGREP_MISSING");
     env.PATH += `${delimiter}${dirname(rg)}`;
@@ -529,7 +531,7 @@ async function findExecutable(name) {
   }
   return undefined;
 }
-function isolatedEnv({ root, home, stateHome, openCodeConfigDir, openCodeCommand, backendPort, memoryUrl, writeback }) {
+function isolatedEnv({ root, home, stateHome, openCodeConfigDir, openCodeCommand, backendPort, memoryUrl, writeback, npmCache }) {
   const windowsRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
   const systemPaths = process.platform === "win32" ? [join(windowsRoot, "System32"), windowsRoot,
     join(windowsRoot, "System32", "Wbem"), join(windowsRoot, "System32", "WindowsPowerShell", "v1.0")]
@@ -539,6 +541,7 @@ function isolatedEnv({ root, home, stateHome, openCodeConfigDir, openCodeCommand
     PATH: [dirname(process.execPath), dirname(openCodeCommand), ...systemPaths].join(delimiter),
     APPDATA: join(home, "AppData", "Roaming"), LOCALAPPDATA: join(home, "AppData", "Local"),
     TMPDIR: join(root, "tmp"), TMP: join(root, "tmp"), TEMP: join(root, "tmp"),
+    npm_config_cache: npmCache ?? join(root, "npm-cache"),
     XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local", "share"),
     XDG_STATE_HOME: join(home, ".local", "state"), XDG_CACHE_HOME: join(home, ".cache"),
     GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(home, "missing-git-config"), GIT_TERMINAL_PROMPT: "0",
