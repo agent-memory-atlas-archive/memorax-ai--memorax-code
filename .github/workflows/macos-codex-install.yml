@@ -90,7 +90,7 @@ jobs:
               : `${include.length} required installation, native-flow and permission jobs; no version fallback.\n`));
           NODE
       - name: Verify test assertions reject malformed content and unexpected failures
-        run: node --test scripts/codex-native-content-check.test.mjs scripts/codex-lifecycle-assertions.test.mjs scripts/opencode-native-support.test.mjs scripts/opencode-initialization-diagnostic.test.mjs
+        run: node --test scripts/codex-native-content-check.test.mjs scripts/codex-lifecycle-assertions.test.mjs scripts/opencode-native-support.test.mjs scripts/opencode-initialization-diagnostic.test.mjs scripts/opencode-initialization-layouts.test.mjs
       - name: Build and validate the installable package
         id: package-check
         shell: bash
@@ -205,7 +205,7 @@ jobs:
     needs: package
     if: github.event_name == 'workflow_dispatch' && inputs.diagnose_opencode_initialization && needs.package.outputs.artifact-ready == 'true'
     runs-on: windows-2025
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
         with:
@@ -218,7 +218,7 @@ jobs:
         with:
           name: memorax-code-package
           path: dist/npm/tarballs
-      - name: Compare native initialization with installed and no-op plugins
+      - name: Compare initialization locations and path lengths with a warm offline cache
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -226,7 +226,8 @@ jobs:
           $npm = (Get-Command npm.cmd).Source
           $tarballs = @(Get-ChildItem dist/npm/tarballs -Filter 'memorax-memorax-code-*.tgz')
           if ($tarballs.Count -ne 1) { throw 'Expected one validated package.' }
-          $wrapperRoot = Join-Path ([IO.Path]::GetTempPath()) ('memorax-opencode-install-' + [guid]::NewGuid())
+          $osTempBase = [IO.Path]::GetTempPath()
+          $runnerTempBase = $env:RUNNER_TEMP
           $root = Join-Path $env:RUNNER_TEMP ('opencode-init-diagnostic-' + [guid]::NewGuid())
           $prefix = Join-Path $root 'tools'
           New-Item -ItemType Directory -Force $root | Out-Null
@@ -254,17 +255,8 @@ jobs:
           $rg = & $node -e 'process.stdout.write(require(process.argv[1]).rgPath)' (Join-Path $prefix 'node_modules/@vscode/ripgrep')
           if ($LASTEXITCODE -ne 0) { throw 'Diagnostic ripgrep resolution failed.' }
           $env:PATH = "$(Split-Path $rg -Parent);$env:PATH"
-          $diagnosticFailed = $false
-          foreach ($layout in @(@{ Name = 'wrapper'; Root = $wrapperRoot }, @{ Name = 'runner'; Root = $root })) {
-            $env:TEMP = Join-Path $layout.Root 'tmp'
-            $env:TMP = $env:TEMP
-            New-Item -ItemType Directory -Force $env:TEMP | Out-Null
-            Write-Output "Initialization layout: $($layout.Name); temp path characters: $($env:TEMP.Length)"
-            & $node scripts/opencode-initialization-diagnostic.mjs (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'node_modules/opencode-ai/bin/opencode.exe')
-            if ($LASTEXITCODE -ne 0) { $diagnosticFailed = $true }
-          }
-          if ($diagnosticFailed) { throw 'The diagnostic reported a failure; inspect the recorded trials.' }
-          Remove-Item -LiteralPath $wrapperRoot -Recurse -Force
+          & $node scripts/opencode-initialization-diagnostic.mjs (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'node_modules/opencode-ai/bin/opencode.exe') $osTempBase $runnerTempBase
+          if ($LASTEXITCODE -ne 0) { throw 'The diagnostic reported a failure; inspect the recorded trials.' }
           Remove-Item -LiteralPath $root -Recurse -Force
 
   opencode-result:
