@@ -458,6 +458,11 @@ If no diagnostic explains the symptom, check each stage in order:
    instead requires its validated `UserPromptSubmit`/`Stop` pair. Cursor requires
    matching native database content and a completed Hook;
    see [Cursor writeback checks](#cursor-hooks-skill-or-automatic-writeback-is-unavailable).
+   For Codex, a provider-supplied assistant internal turn ID can differ from
+   the local rollout turn ID without blocking writeback. A remaining
+   `turn_metadata_mismatch` can indicate conflicting user-message metadata or
+   a mismatch between locally registered and completed client/session/turn
+   identities; those checks still reject writeback.
 3. Check whether the turn was rejected before buffering. In
    `memory.automatic_writeback`, `skipReason=disabled` means the effective
    settings rejected it; `workspace_scope_*` reasons require the scope checks

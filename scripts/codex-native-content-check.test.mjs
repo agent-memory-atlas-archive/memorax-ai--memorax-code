@@ -123,11 +123,35 @@ test("current contract falls back to native user and final assistant events", ()
   assert.equal(selected.user.source, "user_message");
   assert.equal(selected.assistant.source, "agent_message");
 });
-test("content selection rejects the wrong session or conflicting message turn", () => {
+test("content selection accepts provider assistant IDs within local turn boundaries", () => {
+  for (const field of ["turn_id", "turnId"]) {
+    const native = records();
+    native[5].payload.internal_chat_message_metadata_passthrough = { [field]: "provider-turn" };
+    const foreignMetadata = { internal_chat_message_metadata_passthrough: { [field]: identity.turnId } };
+    native.push(
+      response("assistant", "Reply outside a turn", 6, foreignMetadata),
+      event("task_started", 6, { turn_id: "turn-b" }),
+      response("user", "Foreign prompt", 7),
+      response("assistant", "Foreign answer", 8, foreignMetadata),
+      event("task_complete", 9, { turn_id: "turn-b", last_agent_message: "Foreign answer" }),
+    );
+    const selected = selectNativeTurnContent(native, identity);
+    assert.deepEqual(selected.user, { content, timestamp: Date.parse(stamp(3)), source: "response_item" });
+    assert.deepEqual(selected.assistant, {
+      content: "Complete final answer", timestamp: Date.parse(stamp(4)), source: "response_item",
+      timestamps: [Date.parse(stamp(4)), Date.parse(stamp(5))],
+    });
+    assert.throws(() => selectNativeTurnContent(native, { ...identity, turnId: "provider-turn" }), /NATIVE_CONTENT_RECORDS_MISSING/);
+  }
+});
+test("content selection rejects the wrong session or conflicting user message turn", () => {
   assert.throws(() => selectNativeTurnContent(records(), { ...identity, sessionId: "session-b" }), /NATIVE_CONTENT_SESSION_MISMATCH/);
-  const conflicting = records();
-  conflicting[4].payload.internal_chat_message_metadata_passthrough = { turn_id: "turn-b" };
-  assert.throws(() => selectNativeTurnContent(conflicting, identity), /NATIVE_CONTENT_TURN_MISMATCH/);
+  for (const field of ["turn_id", "turnId"]) {
+    const conflicting = records();
+    conflicting[4].payload.internal_chat_message_metadata_passthrough = { [field]: "turn-b" };
+    conflicting[5].payload.internal_chat_message_metadata_passthrough = { [field]: "provider-turn" };
+    assert.throws(() => selectNativeTurnContent(conflicting, identity), /NATIVE_CONTENT_TURN_MISMATCH/);
+  }
 });
 test("content selection does not borrow a later Turn's text or timestamp", () => {
   const native = [...records(), event("task_started", 6, { turn_id: "turn-b" }), response("user", "Foreign prompt", 7), response("assistant", "Foreign answer", 8)];
