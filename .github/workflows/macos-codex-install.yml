@@ -7,6 +7,10 @@ on:
         description: Run only the native Codex provider check using the test environment
         type: boolean
         default: false
+      diagnose_opencode_initialization:
+        description: Run only the isolated Windows OpenCode initialization diagnostic
+        type: boolean
+        default: false
   pull_request:
   push:
     branches: [main]
@@ -15,14 +19,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: codex-install-${{ github.ref }}
+  group: codex-install-${{ github.ref }}-${{ inputs.diagnose_opencode_initialization && 'diagnostic' || 'acceptance' }}
   cancel-in-progress: true
 
 jobs:
   package:
-    if: github.event_name != 'workflow_dispatch' || !inputs.check_deepseek
+    if: github.event_name != 'workflow_dispatch' || !inputs.check_deepseek || inputs.diagnose_opencode_initialization
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      INITIALIZATION_DIAGNOSTIC: ${{ inputs.diagnose_opencode_initialization }}
     outputs:
       codex-matrix: ${{ steps.codex-versions.outputs.matrix }}
       opencode-matrix: ${{ steps.opencode-versions.outputs.matrix }}
@@ -55,7 +61,9 @@ jobs:
           appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
           appendFileSync(process.env.GITHUB_STEP_SUMMARY,
             `Codex baseline: **${baseline}**; npm latest resolved for this run: **${latest}**.\n\n` +
-            `${include.length} required installation, native-flow and permission jobs; no version fallback.\n`);
+            (process.env.INITIALIZATION_DIAGNOSTIC === 'true'
+              ? 'Initialization diagnostic only; this matrix will not run.\n'
+              : `${include.length} required installation, native-flow and permission jobs; no version fallback.\n`));
           NODE
       - name: Resolve the latest OpenCode version once for this run
         id: opencode-versions
@@ -77,10 +85,12 @@ jobs:
           appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
           appendFileSync(process.env.GITHUB_STEP_SUMMARY,
             `OpenCode baseline: **${baseline}**; npm latest resolved for this run: **${latest}**.\n\n` +
-            `${include.length} required installation, native-flow and permission jobs; no version fallback.\n`);
+            (process.env.INITIALIZATION_DIAGNOSTIC === 'true'
+              ? 'Initialization diagnostic only; this matrix will not run.\n'
+              : `${include.length} required installation, native-flow and permission jobs; no version fallback.\n`));
           NODE
       - name: Verify test assertions reject malformed content and unexpected failures
-        run: node --test scripts/codex-native-content-check.test.mjs scripts/codex-lifecycle-assertions.test.mjs scripts/opencode-native-support.test.mjs
+        run: node --test scripts/codex-native-content-check.test.mjs scripts/codex-lifecycle-assertions.test.mjs scripts/opencode-native-support.test.mjs scripts/opencode-initialization-diagnostic.test.mjs
       - name: Build and validate the installable package
         id: package-check
         shell: bash
@@ -117,7 +127,7 @@ jobs:
   install:
     name: Codex ${{ matrix.channel }} ${{ matrix.codex }} (${{ matrix.os }}, Node ${{ matrix.node }})
     needs: package
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true'
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && !inputs.diagnose_opencode_initialization
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.codex-matrix) }}
@@ -155,7 +165,7 @@ jobs:
   opencode:
     name: OpenCode ${{ matrix.channel }} ${{ matrix.opencode }} (${{ matrix.os }}, Node ${{ matrix.node }})
     needs: package
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true'
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && !inputs.diagnose_opencode_initialization
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.opencode-matrix) }}
@@ -190,9 +200,66 @@ jobs:
           OPENCODE_VERSION: ${{ matrix.opencode }}
         run: ./scripts/opencode-install-check.ps1 -TarballDirectory dist/npm/tarballs -OpenCodeVersion $env:OPENCODE_VERSION
 
+  opencode-initialization-diagnostic:
+    name: OpenCode Windows initialization diagnostic (not functional acceptance)
+    needs: package
+    if: github.event_name == 'workflow_dispatch' && inputs.diagnose_opencode_initialization && needs.package.outputs.artifact-ready == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: memorax-code-package
+          path: dist/npm/tarballs
+      - name: Compare native initialization with installed and no-op plugins
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $node = (Get-Command node).Source
+          $npm = (Get-Command npm.cmd).Source
+          $tarballs = @(Get-ChildItem dist/npm/tarballs -Filter 'memorax-memorax-code-*.tgz')
+          if ($tarballs.Count -ne 1) { throw 'Expected one validated package.' }
+          $root = Join-Path $env:RUNNER_TEMP ('opencode-init-diagnostic-' + [guid]::NewGuid())
+          $prefix = Join-Path $root 'tools'
+          New-Item -ItemType Directory -Force $root | Out-Null
+          $allowed = @('PATH', 'SystemRoot', 'WINDIR', 'ComSpec', 'PATHEXT', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432')
+          foreach ($item in @(Get-ChildItem Env:)) {
+            if ($item.Name -notin $allowed) { [Environment]::SetEnvironmentVariable($item.Name, $null, 'Process') }
+          }
+          $env:HOME = Join-Path $root 'home'
+          $env:USERPROFILE = $env:HOME
+          $env:APPDATA = Join-Path $env:HOME 'AppData/Roaming'
+          $env:LOCALAPPDATA = Join-Path $env:HOME 'AppData/Local'
+          $env:MEMORAX_CODE_HOME = Join-Path $root 'state'
+          $env:CODEX_HOME = Join-Path $root 'codex'
+          $env:CLAUDE_CONFIG_DIR = Join-Path $root 'claude'
+          $env:OPENCODE_CONFIG_DIR = Join-Path $root 'opencode'
+          $env:npm_config_cache = Join-Path $root 'npm-cache'
+          $env:MEMORAX_CODE_TEST_NPM_CACHE = $env:npm_config_cache
+          $env:TEMP = Join-Path $root 'tmp'
+          $env:TMP = $env:TEMP
+          $env:MEMORAX_CODE_AUTO_UPDATE = 'false'
+          $env:MEMORAX_CODE_INSTALL_WATCHDOG = '0'
+          New-Item -ItemType Directory -Force $env:HOME, $env:TEMP | Out-Null
+          & $npm install --prefix $prefix --no-audit --no-fund opencode-ai@1.18.18 @vscode/ripgrep@1.18.0 $tarballs[0].FullName
+          if ($LASTEXITCODE -ne 0) { throw 'Diagnostic dependency installation failed.' }
+          $rg = & $node -e 'process.stdout.write(require(process.argv[1]).rgPath)' (Join-Path $prefix 'node_modules/@vscode/ripgrep')
+          if ($LASTEXITCODE -ne 0) { throw 'Diagnostic ripgrep resolution failed.' }
+          $env:PATH = "$(Split-Path $rg -Parent);$env:PATH"
+          & $node scripts/opencode-initialization-diagnostic.mjs (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'node_modules/opencode-ai/bin/opencode.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'The diagnostic reported a failure; inspect the recorded trials.' }
+          Remove-Item -LiteralPath $root -Recurse -Force
+
   opencode-result:
     name: OpenCode functional result
-    if: always() && !(github.event_name == 'workflow_dispatch' && inputs.check_deepseek)
+    if: always() && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization))
     needs: [package, opencode]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
@@ -211,7 +278,7 @@ jobs:
 
   functional-result:
     name: ${{ github.event_name == 'workflow_dispatch' && inputs.check_deepseek && 'Codex provider-only result' || 'Codex functional result' }}
-    if: always()
+    if: always() && !inputs.diagnose_opencode_initialization
     needs: [package, install, provider]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
@@ -236,7 +303,7 @@ jobs:
           fi
 
   provider:
-    if: github.event_name == 'workflow_dispatch' && inputs.check_deepseek
+    if: github.event_name == 'workflow_dispatch' && inputs.check_deepseek && !inputs.diagnose_opencode_initialization
     runs-on: ubuntu-24.04
     environment: test
     timeout-minutes: 5

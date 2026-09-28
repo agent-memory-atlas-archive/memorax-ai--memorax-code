@@ -582,6 +582,16 @@ installed package, OpenCode executable, and the wrapper's test dependencies:
 node scripts/opencode-permissions-check.mjs PACKAGE_ROOT OPENCODE_EXECUTABLE --late-approval
 ```
 
+For startup investigation, manual dispatch with
+`diagnose_opencode_initialization=true` runs only the package check and a
+Windows baseline diagnostic. It compares three fresh installed-plugin
+instances with three fresh no-op-plugin instances, without retrying failed
+trials or changing the session request timeout. A loopback-only Bun inspector
+collects allowlisted npm phase timings and counts; raw logs, paths, credentials,
+and inspector objects are not published. Diagnostic completion is not
+functional acceptance, and this mode does not run the required matrix or the
+paid provider check.
+
 On macOS or Linux, use `memorax_dev make test-opencode-e2e` to validate the
 package and run the baseline. To reuse an already validated package or select
 another exact client version:
