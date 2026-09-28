@@ -123,7 +123,8 @@ const laterClientFixtures = [
 ];
 
 function legacyClientConfig(omitted, selected = "codex") {
-  return ["[clients]", ...clientIds.filter((client) => client !== omitted)
+  const omittedClients = Array.isArray(omitted) ? omitted : [omitted];
+  return ["[clients]", ...clientIds.filter((client) => !omittedClients.includes(client))
     .map((client) => `${client} = ${client === selected}`), ""].join("\n");
 }
 
@@ -1969,9 +1970,10 @@ test("automatic update setup leaves an unavailable unconfigured client undecided
 });
 
 test("partial legacy client selections preserve explicit exclusions during update and reinstall", async (t) => {
-  for (const missing of ["codex", "claude"]) for (const mode of ["automatic update", "ordinary reinstall"]) {
-    await t.test(`${mode}: missing ${missing}`, async () => {
-      const existingConfig = `${legacyClientConfig(missing, missing)}\n[memorax]\nendpoint = "https://memorax.example"\napi_key = "existing-secret"\nuser_id = "existing-user"\n`;
+  for (const missing of [["codex"], ["claude"], ["codex", "claude"]]) for (const mode of ["automatic update", "ordinary reinstall"]) {
+    await t.test(`${mode}: missing ${missing.join(" and ")}`, async () => {
+      const selected = missing.length === 2 ? "opencode" : missing[0];
+      const existingConfig = `${legacyClientConfig(missing, selected)}\n[memorax]\nendpoint = "https://memorax.example"\napi_key = "existing-secret"\nuser_id = "existing-user"\n`;
       const run = await runSetup({
         memoraxCodeConfig: existingConfig,
         opencodeAvailable: true, traeAvailable: true, cursorAvailable: true, dshProfiles: ["default"],
@@ -1982,9 +1984,78 @@ test("partial legacy client selections preserve explicit exclusions during updat
         assert.equal(run.result.code, 0, run.result.stderr);
         const config = parse(await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8"));
         assertConfiguredValuesPreserved(parse(existingConfig), config);
-        assert.equal(config.clients[missing], true);
-        assert.ok(run.log.includes(`memorax-code start --clients ${missing} --json\n`), run.log);
+        for (const client of missing) assert.equal(config.clients[client], true);
+        const expectedClients = clientIds.filter((client) => missing.includes(client) || client === selected);
+        assert.ok(run.log.includes(`memorax-code start --clients ${expectedClients.join(",")} --json\n`), run.log);
         await assertSetupComplete(run);
+      } finally {
+        await rm(run.root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("setup preserves DSH-only intent without Codex or Claude runtimes", async () => {
+  const existingConfig = "[clients]\ndsh = false\n";
+  const run = await runSetup({
+    memoraxCodeConfig: existingConfig, codexAvailable: false, claudeAvailable: false,
+    dshProfiles: ["default"], existingCache: true, interactive: false, updateMode: true,
+    memoraxEnv: { MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE: "1" },
+  });
+  try {
+    assert.equal(run.result.code, 0, run.result.stderr);
+    const config = parse(await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8"));
+    assertConfiguredValuesPreserved(parse(existingConfig), config);
+    assert.equal(Object.hasOwn(config.clients, "codex"), false);
+    assert.equal(Object.hasOwn(config.clients, "claude"), false);
+    assert.match(run.log, /^memorax-code start --clients none --json$/m);
+    await assertSetupComplete(run);
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
+});
+
+test("automatic update still requires an explicit known client choice", async (t) => {
+  for (const existingConfig of ["", "[clients]\n", "[clients]\nfuture_client = false\n"]) {
+    await t.test(existingConfig || "no clients table", async () => {
+      const run = await runSetup({
+        memoraxCodeConfig: existingConfig, existingCache: true, interactive: false, updateMode: true,
+        memoraxEnv: { MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE: "1" },
+      });
+      try {
+        assert.equal(run.result.code, 1, run.result.stderr);
+        assert.match(run.result.stderr, /Automatic update setup requires an existing \[clients\] selection/);
+        assert.equal(await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8"), existingConfig);
+        assert.doesNotMatch(run.log, /^memorax-code start/m);
+        await assertSetupIncomplete(run);
+      } finally {
+        await rm(run.root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("setup rejects invalid client choices without rewriting configuration", async (t) => {
+  for (const existingConfig of [
+    'clients = "invalid"\n', "clients = []\n", "clients = 1979-05-27T07:32:00Z\n",
+    '[clients]\ncodex = "false"\nclaude = false\n',
+    "[clients]\ncodex = false\nclaude = 1\n", '[clients]\nopencode = "false"\n',
+  ]) for (const automatic of [false, true]) {
+    await t.test(`${automatic ? "automatic update" : "ordinary setup"}: ${existingConfig.trim()}`, async () => {
+      const run = await runSetup({
+        memoraxCodeConfig: existingConfig,
+        ...(automatic ? { existingCache: true, interactive: false, updateMode: true,
+          memoraxEnv: { MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE: "1" } } : {}),
+      });
+      try {
+        assert.equal(run.result.code, 1, run.result.stderr);
+        assert.match(run.result.stderr, /\[SETUP_CONFIG_FAILED\]/);
+        assert.equal(await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8"), existingConfig);
+        const diagnostics = await readSetupDiagnostics(run);
+        assert.equal(diagnostics.length, 1);
+        assert.equal(diagnostics[0].configState, "preserved");
+        assert.doesNotMatch(run.log, /^memorax-code start/m);
+        await assertSetupIncomplete(run);
       } finally {
         await rm(run.root, { recursive: true, force: true });
       }

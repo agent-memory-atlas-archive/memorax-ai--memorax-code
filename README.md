@@ -361,6 +361,8 @@ memorax-code update
 Setup also enables background updates while the managed Backend is running.
 An update briefly stops a running managed Backend and restores it with the
 retained client selection.
+Setup after reinstall and updates preserve explicit client choices even when
+older configuration omits `codex` or `claude`.
 See [update settings](docs/configuration.md#setup-automatic-update-and-package-transition-state)
 for release channels, custom state roots, client selection, Backend restoration,
 and disabling background checks. Restart or refresh a client after an update
