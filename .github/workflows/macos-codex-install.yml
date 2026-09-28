@@ -226,6 +226,7 @@ jobs:
           $npm = (Get-Command npm.cmd).Source
           $tarballs = @(Get-ChildItem dist/npm/tarballs -Filter 'memorax-memorax-code-*.tgz')
           if ($tarballs.Count -ne 1) { throw 'Expected one validated package.' }
+          $wrapperRoot = Join-Path ([IO.Path]::GetTempPath()) ('memorax-opencode-install-' + [guid]::NewGuid())
           $root = Join-Path $env:RUNNER_TEMP ('opencode-init-diagnostic-' + [guid]::NewGuid())
           $prefix = Join-Path $root 'tools'
           New-Item -ItemType Directory -Force $root | Out-Null
@@ -253,8 +254,17 @@ jobs:
           $rg = & $node -e 'process.stdout.write(require(process.argv[1]).rgPath)' (Join-Path $prefix 'node_modules/@vscode/ripgrep')
           if ($LASTEXITCODE -ne 0) { throw 'Diagnostic ripgrep resolution failed.' }
           $env:PATH = "$(Split-Path $rg -Parent);$env:PATH"
-          & $node scripts/opencode-initialization-diagnostic.mjs (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'node_modules/opencode-ai/bin/opencode.exe')
-          if ($LASTEXITCODE -ne 0) { throw 'The diagnostic reported a failure; inspect the recorded trials.' }
+          $diagnosticFailed = $false
+          foreach ($layout in @(@{ Name = 'wrapper'; Root = $wrapperRoot }, @{ Name = 'runner'; Root = $root })) {
+            $env:TEMP = Join-Path $layout.Root 'tmp'
+            $env:TMP = $env:TEMP
+            New-Item -ItemType Directory -Force $env:TEMP | Out-Null
+            Write-Output "Initialization layout: $($layout.Name); temp path characters: $($env:TEMP.Length)"
+            & $node scripts/opencode-initialization-diagnostic.mjs (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'node_modules/opencode-ai/bin/opencode.exe')
+            if ($LASTEXITCODE -ne 0) { $diagnosticFailed = $true }
+          }
+          if ($diagnosticFailed) { throw 'The diagnostic reported a failure; inspect the recorded trials.' }
+          Remove-Item -LiteralPath $wrapperRoot -Recurse -Force
           Remove-Item -LiteralPath $root -Recurse -Force
 
   opencode-result:

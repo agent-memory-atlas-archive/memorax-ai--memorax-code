@@ -16,7 +16,13 @@ export function installNpmTimingObserver() {
   const packages = new Map([
     ["node_modules/@opencode-ai/plugin", "package:opencode-plugin"],
     ["node_modules/@opencode-ai/sdk", "package:opencode-sdk"],
-    ["node_modules/zod", "package:zod"],
+    ["node_modules/@ai-sdk/provider", "package:ai-sdk-provider"],
+    ["node_modules/@standard-schema/spec", "package:standard-schema-spec"],
+    ["node_modules/@msgpackr-extract/msgpackr-extract-win32-x64", "package:msgpackr-extract-win32-x64"],
+    ...["zod", "effect", "ini", "toml", "uuid", "yaml", "msgpackr", "msgpackr-extract", "fast-check",
+      "pure-rand", "multipasta", "find-my-way-ts", "kubernetes-types", "json-schema", "cross-spawn",
+      "which", "path-key", "shebang-command", "shebang-regex", "isexe", "node-gyp-build-optional-packages",
+      "detect-libc"].map((name) => [`node_modules/${name}`, `package:${name}`]),
   ]);
   const phases = new Map();
   const logCounts = Object.fromEntries(["error", "notice", "warn", "info", "verbose", "http", "silly", "timing"]
@@ -130,7 +136,8 @@ async function runTrial(packageRoot, openCodeCommand, kind, ordinal) {
   const result = { kind, ordinal, status: "FAIL", stage: "harness creation", sessionCreated: false };
   let harness, server, inspector;
   try {
-    harness = await createNativeHarness({ packageRoot, openCodeCommand, label: `init-diag-${kind}-${ordinal}`, writeback: false });
+    harness = await createNativeHarness({ packageRoot, openCodeCommand, label: "server" });
+    result.configDirectoryCharacters = harness.openCodeConfigDir.length;
     result.stage = "plugin setup";
     if (kind === "actual") {
       await harness.setup();

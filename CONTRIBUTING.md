@@ -584,9 +584,11 @@ node scripts/opencode-permissions-check.mjs PACKAGE_ROOT OPENCODE_EXECUTABLE --l
 
 For startup investigation, manual dispatch with
 `diagnose_opencode_initialization=true` runs only the package check and a
-Windows baseline diagnostic. It compares three fresh installed-plugin
-instances with three fresh no-op-plugin instances, without retrying failed
-trials or changing the session request timeout. A loopback-only Bun inspector
+Windows baseline diagnostic. For both the installation wrapper's temporary
+directory layout and the runner's temporary directory layout, it compares
+three fresh installed-plugin instances with three fresh no-op-plugin instances,
+without retrying failed trials or changing the session request timeout.
+A loopback-only Bun inspector
 collects allowlisted npm phase timings and counts; raw logs, paths, credentials,
 and inspector objects are not published. Diagnostic completion is not
 functional acceptance, and this mode does not run the required matrix or the
