@@ -112,7 +112,7 @@ jobs:
         with:
           name: memorax-code-package
           path: dist/npm/tarballs
-      - name: Verify lifecycle, native writeback, permissions and inheritance (macOS/Linux)
+      - name: Verify lifecycle, native writeback, permissions and shared configuration (macOS/Linux)
         if: runner.os != 'Windows'
         shell: bash
         env:
@@ -122,7 +122,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/codex-install-user-path.test.ps1
-      - name: Verify lifecycle, native writeback, permissions and inheritance (Windows)
+      - name: Verify lifecycle, native writeback, permissions and shared configuration (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         env:

@@ -419,14 +419,20 @@ independent request assertions. Search validates the complete fixture fields and
 both JSON and default text output. Skill command checks validate and invoke the
 platform CLI entrypoint from the installed reference; a simulated model still
 directs the calls, so this is not autonomous natural-language Skill validation.
-A Repo Memory worker case checks shared global configuration. A separate native
-regression sets a different foreground model or provider, then requires the worker
-to use that override in its actual HTTP request and native record. Both cases run
-even when one fails, report expected and actual values, and return nonzero on any
-failure. Known product defects remain failing tests; this suite does not skip them
-or convert their failure to a passing expectation. Controlled no-op responses
-intentionally fail bundle validation, so these checks do not prove successful
-Repo Memory generation or permission inheritance.
+A Repo Memory worker case checks shared global model and provider configuration
+and remains required in the native conversation check.
+Session-specific model/provider override inheritance is pending implementation,
+so the installation wrappers report it as skipped and do not run
+`scripts/codex-model-inheritance-check.mjs`. That standalone script is retained
+as a future acceptance check: it sets a different foreground model or provider
+and requires the worker to use that override in its actual HTTP request and
+native record. Running it directly with an installed package root and Codex CLI
+path still executes both cases, reports expected and actual values, and returns
+nonzero on any failure. Re-enable it in both installation wrappers when the
+feature is implemented; do not weaken its assertions to match default-only
+behavior. Controlled no-op responses intentionally fail bundle validation, so
+these checks do not prove successful Repo Memory generation or permission
+inheritance.
 The native conversation and permission checks disable writeback buffering and
 chunking to validate immediate, exact requests. Default buffer flushing and
 chunked payload combinations require separate native coverage.

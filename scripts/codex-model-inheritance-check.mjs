@@ -8,6 +8,9 @@ import { assertCompleteText, selectNativeTurnContent } from "./codex-native-cont
 import { check, createNativeHarness, sendResponses, stopNativeProcessTree, waitFor } from "./codex-native-support.mjs";
 
 // Usage: node scripts/codex-model-inheritance-check.mjs <installed-package-root> <codex-cli-path>
+// Future acceptance check: session override inheritance is pending implementation.
+// Keep this standalone check strict; re-enable it in both installation wrappers
+// when the feature is supported. Shared default configuration remains required.
 // Each case must fail if a worker ignores the foreground override. A no-op model
 // response deliberately avoids testing Repo Memory generation in this suite.
 const defaults = { model: "gpt-5.4", provider: "local_native", endpoint: "default" };
