@@ -1322,7 +1322,7 @@ async function installWindowsDshPnpmCompatibility() {
       try {
         // Read the selected shim's target: pnpm and Corepack can coexist in one prefix.
         const shim = readFileSync(executable, "utf8").replaceAll("\\", "/");
-        const target = /%(?:dp0%|~dp0)[/]((?:node_modules\/|\.\.\/)(?:pnpm\/bin\/pnpm\.cjs|corepack\/dist\/pnpm\.js))"/i.exec(shim)?.[1];
+        const target = /%(?:dp0%|~dp0)[/]((?:node_modules\/|\.\.\/)(?:pnpm\/bin\/pnpm\.cjs|pnpm\/pnpm\.exe|corepack\/dist\/pnpm\.js))"/i.exec(shim)?.[1];
         const candidate = target && join(dirname(executable), target);
         if (candidate && existsSync(candidate)) entrypoint = candidate;
       } catch (error) {
@@ -1335,6 +1335,9 @@ async function installWindowsDshPnpmCompatibility() {
         signal: null,
         error: Object.assign(new Error("Cannot resolve pnpm's Windows Node entrypoint"), { code: "ENOEXEC" }),
       };
+    }
+    if (/\.exe$/i.test(entrypoint)) {
+      return spawn(entrypoint, args, { ...options, shell: false });
     }
     // Forward the original arguments, including literal percent signs, without
     // cmd.exe expansion. DSH still owns Profile mutation and reconciliation.
