@@ -140,7 +140,10 @@ export function trackLifecycleTerminal(child, env) {
     // ConPTY handles must be disposed even after its shell exits. POSIX does
     // not need another leader signal once onExit has retired that identity.
     if (!posix || !ended) {
-      try { child.kill("SIGKILL"); }
+      try {
+        if (posix) child.kill("SIGKILL");
+        else child.kill();
+      }
       catch (error) { if (error.code !== "ESRCH") cleanupError ??= error; }
     }
     const deadline = Date.now() + 10_000;

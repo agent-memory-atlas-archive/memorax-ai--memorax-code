@@ -287,6 +287,29 @@ test("terminal tracker rejects an unowned process identity without signalling", 
     (error) => error.testCode === "INSTALL_TERMINAL_IDENTITY_INVALID" && error.cleanupFailed === true);
 });
 
+test("Windows terminal disposal calls node-pty kill without a signal after exit", async () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  let reportExit;
+  const calls = [];
+  try {
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    const terminal = trackLifecycleTerminal({ pid: 2147483647,
+      onExit(callback) { reportExit = callback; },
+      kill(...args) {
+        calls.push(args);
+        if (args[0]) throw new Error("Signals not supported on windows.");
+      },
+    }, {});
+    // An already-exited synthetic PTY exercises handle disposal without any
+    // taskkill invocation or real process identity being signalled.
+    reportExit({ exitCode: 0, signal: 0 });
+    await terminal.exited;
+    await terminal.stop();
+    await terminal.stop();
+    assert.deepEqual(calls, [[]]);
+  } finally { Object.defineProperty(process, "platform", platform); }
+});
+
 for (const after of ["setTimeout(() => {}, 60000);", "process.exit(0);"]) {
   test(`terminal stop removes its owned ${posix ? "group" : "tree"} when the leader ${after.startsWith("setTimeout") ? "is live" : "has exited"}`,
     { skip: !posix && after.startsWith("process.exit"), timeout: 20_000 }, async () => {
