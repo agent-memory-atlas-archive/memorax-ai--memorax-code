@@ -31,7 +31,7 @@ export async function createNativeHarness({ packageRoot, claudeCommand, label = 
   const memoryEntrypoint = join(packageRoot, "bin", "memorax-cli.mjs");
   const modelRequests = [], memoryRequests = [], serverErrors = [];
   const children = new Set(), backendPids = new Set();
-  let modelHandler, nativeVersion, setupStarted = false, closePromise, modelPreflightRequests = 0;
+  let modelHandler, nativeVersion, beforeClose, setupStarted = false, closePromise, modelPreflightRequests = 0;
   let memoryServer, modelServer, backendPort, env;
   try {
     for (const directory of [workspace, stateHome, claudeHome, join(root, "tmp")]) await mkdir(directory, { recursive: true });
@@ -165,6 +165,8 @@ export async function createNativeHarness({ packageRoot, claudeCommand, label = 
   function close() { return closePromise ??= closeResources(); }
   async function closeResources() {
     let cleanupError;
+    try { await beforeClose?.(); }
+    catch (error) { cleanupError = error; }
     try {
       for (const child of children) await stopTree(child, env);
       const pidPath = join(stateHome, "runtime", "backend", "backend.pid.json");
@@ -182,7 +184,7 @@ export async function createNativeHarness({ packageRoot, claudeCommand, label = 
         await new Promise((done) => probe.close(done));
       }
     } catch (error) {
-      cleanupError = error;
+      cleanupError ??= error;
       for (const child of children) await stopTree(child, env).catch(() => {});
       for (const pid of backendPids) if (processAlive(pid)) await stopTree({ pid }, env).catch(() => {});
     } finally {
@@ -211,6 +213,11 @@ export async function createNativeHarness({ packageRoot, claudeCommand, label = 
     modelUrl: modelServer.url, memoryUrl: memoryServer.url, modelRequests, memoryRequests, serverErrors,
     setup, close, runProduct, runClaude, spawnClaude,
     runMemory: (args, options) => run(process.execPath, [memoryEntrypoint, ...args], options),
+    setBeforeClose(handler) {
+      check(!closePromise, "NATIVE_HARNESS_IS_CLOSING");
+      check(typeof handler === "function", "NATIVE_CLEANUP_HANDLER_INVALID");
+      beforeClose = handler;
+    },
     setModelHandler(handler) { modelHandler = handler; } };
 }
 

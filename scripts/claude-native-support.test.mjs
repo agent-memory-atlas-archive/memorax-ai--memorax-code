@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { readFile, stat } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -300,6 +302,70 @@ test("cleanup is idempotent, removes owned state and ports, and prevents new pro
   }
   assert.deepEqual(["SIGINT", "SIGTERM"].map((signal) => process.listenerCount(signal)), initialSignalCounts);
   assert.equal(harness.close(), first);
+});
+
+test("native cleanup runs its quiesce callback once before removing owned state", async (t) => {
+  const harness = await createHarness(t);
+  let calls = 0;
+  assert.throws(() => harness.setBeforeClose(null), { nativeCode: "NATIVE_CLEANUP_HANDLER_INVALID" });
+  harness.setBeforeClose(async () => {
+    calls++;
+    assert.equal((await stat(harness.root)).isDirectory(), true);
+  });
+  await harness.close();
+  await harness.close();
+  assert.equal(calls, 1);
+  assert.throws(() => harness.setBeforeClose(() => {}), { nativeCode: "NATIVE_HARNESS_IS_CLOSING" });
+});
+
+test("a failed quiesce callback preserves state but still stops newly recorded Backend and receiver ports", async () => {
+  const fixture = await mkdtemp(join(tmpdir(), "claude-native-close-test-"));
+  let harness, backend;
+  try {
+    await mkdir(join(fixture, "lib"));
+    await mkdir(join(fixture, "bin"));
+    await writeFile(join(fixture, "lib", "windows-cli-invocation.mjs"),
+      "export const resolveWindowsCliInvocation = (command, args) => ({ command, args });\n");
+    await writeFile(join(fixture, "bin", "memorax-code.mjs"), `
+      import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
+      import { join } from "node:path";
+      const path = join(process.env.MEMORAX_CODE_HOME, "runtime/backend/backend.pid.json");
+      const { pid } = JSON.parse(readFileSync(path, "utf8"));
+      try { process.kill(pid, "SIGTERM"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+      unlinkSync(path);
+      writeFileSync(join(process.env.MEMORAX_CODE_HOME, "stop-observed"), "yes");
+      console.log(JSON.stringify({ ok: true }));
+    `);
+    harness = await createNativeHarness({ packageRoot: fixture, claudeCommand: process.execPath, label: "close-test" });
+    backend = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
+    await new Promise((done, reject) => { backend.once("spawn", done); backend.once("error", reject); });
+    const failure = Object.assign(new Error("FIXTURE_QUIESCE_FAILED"), { nativeCode: "FIXTURE_QUIESCE_FAILED" });
+    harness.setBeforeClose(async () => {
+      const directory = join(harness.stateHome, "runtime", "backend");
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, "backend.pid.json"), JSON.stringify({ pid: backend.pid }));
+      throw failure;
+    });
+    await assert.rejects(harness.close(), (error) => error === failure);
+    assert.equal(processAlive(backend.pid), false);
+    assert.equal((await stat(harness.root)).isDirectory(), true);
+    assert.equal(await readFile(join(harness.stateHome, "stop-observed"), "utf8"), "yes");
+    await assert.rejects(stat(join(harness.stateHome, "runtime", "backend", "backend.pid.json")), { code: "ENOENT" });
+    for (const url of [harness.modelUrl, harness.memoryUrl]) {
+      const probe = createServer();
+      await new Promise((done, reject) => {
+        probe.once("error", reject);
+        probe.listen(Number(new URL(url).port), "127.0.0.1", done);
+      });
+      await new Promise((done) => probe.close(done));
+    }
+  } finally {
+    if (backend?.pid && processAlive(backend.pid)) backend.kill("SIGKILL");
+    if (backend?.pid) await waitFor(() => !processAlive(backend.pid), "FIXTURE_BACKEND_CLEANUP_FAILED");
+    await harness?.close().catch(() => {});
+    if (harness) await rm(harness.root, { recursive: true, force: true });
+    await rm(fixture, { recursive: true, force: true });
+  }
 });
 
 test("command runner preserves stdin and split UTF-8 stdout and stderr", async (t) => {

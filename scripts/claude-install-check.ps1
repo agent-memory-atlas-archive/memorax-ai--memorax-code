@@ -70,6 +70,10 @@ Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
       $tarball $npmCommand $PreviousVersion (Join-Path $testRoot 'terminal/node_modules/node-pty') `
       (Join-Path $repoRoot 'scripts/claude-setup-pty.mjs') $ClaudeVersion
     if ($LASTEXITCODE -ne 0) { throw 'The Claude installation smoke failed; isolated state retained.' }
+    & node (Join-Path $repoRoot 'scripts/claude-install-interruption-check.mjs') `
+      (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'claude.cmd') `
+      (Join-Path $testRoot 'terminal/node_modules/node-pty') $ClaudeVersion
+    if ($LASTEXITCODE -ne 0) { throw 'The Claude setup interruption check failed; isolated state retained.' }
     & node (Join-Path $repoRoot 'scripts/claude-native-check.mjs') `
       (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'claude.cmd') $ClaudeVersion
     if ($LASTEXITCODE -ne 0) { throw 'The Claude native flow check failed; isolated state retained.' }

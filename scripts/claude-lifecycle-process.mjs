@@ -116,6 +116,44 @@ export function startLifecycleCommand(command, args, {
   };
 }
 
+export function trackLifecycleTerminal(child, env) {
+  if (!Number.isInteger(child?.pid) || child.pid <= 1 || typeof child.onExit !== "function" || typeof child.kill !== "function") {
+    throw commandError("INSTALL_TERMINAL_IDENTITY_INVALID", true);
+  }
+  let ended = false, stopping;
+  const exited = new Promise((done) => child.onExit((event) => { ended = true; done(event); }));
+  return { child, exited, stop: () => stopping ??= stop() };
+
+  async function stop() {
+    const posix = process.platform !== "win32";
+    let cleanupError;
+    if (posix) {
+      try { if (groupMayExist(child.pid)) signalGroup(child.pid); }
+      catch (error) { cleanupError ??= error; }
+    } else if (!ended) {
+      const windowsRoot = env?.SystemRoot ?? process.env.SystemRoot ?? "C:\\Windows";
+      try {
+        await execFileAsync(join(windowsRoot, "System32", "taskkill.exe"), ["/PID", String(child.pid), "/T", "/F"],
+          { env, windowsHide: true, timeout: 10_000 });
+      } catch (error) { cleanupError ??= error; }
+    }
+    // ConPTY handles must be disposed even after its shell exits. POSIX does
+    // not need another leader signal once onExit has retired that identity.
+    if (!posix || !ended) {
+      try { child.kill("SIGKILL"); }
+      catch (error) { if (error.code !== "ESRCH") cleanupError ??= error; }
+    }
+    const deadline = Date.now() + 10_000;
+    if (posix) {
+      try { await waitFor(() => !groupMayExist(child.pid), "INSTALL_TERMINAL_GROUP_REMAINS", deadline); }
+      catch (error) { cleanupError ??= error; }
+    }
+    try { await waitFor(() => ended, "INSTALL_TERMINAL_PROCESS_REMAINS", deadline); }
+    catch (error) { cleanupError ??= error; }
+    if (cleanupError) { cleanupError.cleanupFailed = true; throw cleanupError; }
+  }
+}
+
 async function terminalGroups(rootPid, env) {
   const { stdout } = await execFileAsync("/bin/ps", ["-axo", "pid=,ppid=,pgid="], {
     env, timeout: 5_000, maxBuffer: 1024 * 1024, encoding: "utf8",

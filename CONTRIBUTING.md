@@ -625,10 +625,11 @@ injects a prebuilt Repo Memory bundle.
 ### Claude Native Smoke CI
 
 The same workflow adds an independent Claude Code matrix and a `Claude native
-smoke result` check. It covers installation and upgrade lifecycle, native memory,
-scripted Skill execution, and permissions, but is not full functional parity
-with the Codex and OpenCode suites. It consumes the package job's exact validated
-tarball and installs the official Claude Code CLI. Version 2.1.277 is
+smoke result` check. It covers the shared installation, upgrade recovery, setup
+interruption, native memory, scripted Skill, permission, and Repo Memory global
+configuration categories. Client-specific evidence and exclusions below still
+differ from the Codex and OpenCode suites. It consumes the package job's exact
+validated tarball and installs the official Claude Code CLI. Version 2.1.277 is
 the baseline; npm's latest stable version is resolved once per run and tested
 as an exact release without fallback. Both tracks run on Ubuntu, macOS, and
 Windows with Node.js 24. Ubuntu also checks the baseline with Node.js 22,
@@ -665,6 +666,15 @@ overrides; explicit Search verifies the retained account against a loopback
 receiver. Claude's exact `HEAD /api/hello` connectivity probe is counted separately;
 other lifecycle model and memory requests are rejected.
 
+The interruption suite terminates real setup after configuration publication,
+before Backend startup, and after a healthy Backend exists but before completion.
+Test-only process-entry gates and the real Backend lifecycle lock hold those
+stages. A fourth case cancels at the masked replacement-key prompt. Each case
+requires the saved account and unrelated Claude settings to remain intact, no
+false completion record, an ordinary retry without account input, native Claude
+readiness, and a Search using the saved account. These controlled process
+interruptions do not simulate power loss.
+
 The native suite checks installed plugin discovery and real Claude turns
 against a local deterministic Anthropic Messages
 server and a separate local Memory receiver:
@@ -688,6 +698,17 @@ responses, so these cases do not establish model quality or autonomous Skill
 selection. Content-oracle and harness unit tests run before packaging using
 local fixtures; they are separate from native-client evidence.
 
+The native suite also starts a real Repo Memory worker from a foreground turn
+in an isolated Git repository. Foreground and worker requests must use the
+configured global model and loopback provider with synthetic credentials. The
+worker request must contain the complete supervised job prompt, and its no-op
+response must produce `artifact_validation_failed` after a successful native
+client exit, with no Memory requests. Job ownership and owned-process exit are
+checked separately. Claude's worker uses `--no-session-persistence`, so this case
+does not require or claim a persisted background transcript. It does not prove
+successful Repo Memory generation, temporary foreground model/provider override
+inheritance, or permission inheritance.
+
 The permission suite drives Claude's native bidirectional `stream-json`
 control protocol. It checks preallowed tools, explicit approval, denial, cancel
 at a permission request, interruption while waiting, and interruption of an
@@ -709,8 +730,8 @@ cancellation and the absence of cancelled-turn automatic Add through recovery.
 
 The wrappers use temporary user, Claude, and Backend homes, an isolated npm
 prefix, synthetic credentials, and test-only `node-pty@1.1.0` for real terminal
-input. The lifecycle and native suites check owned-process cleanup before the
-wrappers remove the runtime. Windows uses the same
+input. Each suite checks owned-process cleanup before the wrappers remove the
+runtime. Windows uses the same
 exact-prefix user PATH cleanup guard as Codex and OpenCode, including its
 interruption and concurrent-update limitations, and CI selects `runner.temp`
 through `TEMP` and `TMP`. Native Windows execution requires PowerShell 7 and
@@ -720,8 +741,7 @@ POSIX cleanup retains owned process groups after their leaders exit. Windows
 cleanup targets live CLI process trees and the recorded Backend; arbitrary tool
 processes orphaned after their parent exits are not covered by this smoke.
 
-Controlled interruption at setup publication/startup stages and Repo Memory
-workers are not covered by these checks. Neither are Desktop/editor UI,
+These checks do not cover Desktop/editor UI,
 ordinary-user/UAC behavior, real system credential stores, live model quality,
 or default buffered/chunked writeback. Do not report those as passed based on
 this smoke result.

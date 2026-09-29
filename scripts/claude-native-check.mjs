@@ -6,6 +6,7 @@ import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, sear
 import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
   assertWritebackMessages, expectedSearchAnswer } from "./codex-native-content-check.mjs";
 import { assertExactText, assertNativeReadText, selectNativeMemoraxPlugin, selectNativeTurnContent } from "./claude-native-content-check.mjs";
+import { verifyBackgroundGlobalConfiguration } from "./claude-background-check.mjs";
 
 const report = { status: "FAIL", scope: "native_claude_installed_plugin_mock_memorax", platform: process.platform,
   paidModelRequests: 0, modelQualityEvaluated: false, checks: [], contentChecks: [],
@@ -183,6 +184,12 @@ try {
   check(harness.modelRequests.length === 13 && harness.memoryRequests.length === 11 && harness.serverErrors.length === 0,
     "NATIVE_REQUEST_COUNT_OR_RECEIVER_MISMATCH");
   report.checks.push("complete native text, prompt identities, native timestamps, redaction and workspace isolation");
+  stage = "native flow cleanup before background worker";
+  await harness.close();
+  stage = "global settings and real Repo Memory worker";
+  report.backgroundGlobalConfiguration = {};
+  await verifyBackgroundGlobalConfiguration(harness, report.backgroundGlobalConfiguration);
+  report.checks.push("foreground and installed Repo Memory worker use global Claude settings; native noop output fails artifact validation");
   report.status = "PASS";
   report.nativeSessions = 2;
   report.nativeTurns = expectedTurns.length;

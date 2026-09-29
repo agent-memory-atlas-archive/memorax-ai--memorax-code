@@ -91,6 +91,9 @@ isolated node "$repo_root/scripts/claude-install-smoke.mjs" \
   "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$test_root/npm/bin/claude" "$tarball" "$npm_command" "$previous_version" \
   "$test_root/terminal/node_modules/node-pty" "$repo_root/scripts/claude-setup-pty.mjs" "$claude_version"
+isolated node "$repo_root/scripts/claude-install-interruption-check.mjs" \
+  "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$test_root/npm/bin/claude" "$test_root/terminal/node_modules/node-pty" "$claude_version"
 isolated node "$repo_root/scripts/claude-native-check.mjs" \
   "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$test_root/npm/bin/claude" "$claude_version"

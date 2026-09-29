@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { startLifecycleCommand } from "./claude-lifecycle-process.mjs";
+import { startLifecycleCommand, trackLifecycleTerminal } from "./claude-lifecycle-process.mjs";
 
 const posix = process.platform !== "win32";
 const fixtureEnv = process.platform === "win32" ? { SystemRoot: process.env.SystemRoot, PATH: process.env.SystemRoot } : {};
@@ -261,5 +262,88 @@ test("POSIX group SIGKILL EPERM remains a cleanup failure after the owned leader
       await operation.stop().catch(() => {});
       if (pid && alive(pid)) { process.kill(pid, "SIGKILL"); await waitFor(() => !alive(pid)); }
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+function terminalFixture(script) {
+  const child = spawn(process.execPath, [...nodeArgs, script], {
+    env: fixtureEnv, detached: posix, windowsHide: true, stdio: ["ignore", "pipe", "ignore"],
+  });
+  let stdout = "";
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (text) => { stdout += text; });
+  const terminal = trackLifecycleTerminal({ pid: child.pid,
+    onExit: (callback) => child.once("exit", (exitCode, signal) => callback({ exitCode, signal })),
+    kill: (signal) => child.kill(signal),
+  }, fixtureEnv);
+  return { terminal, async identity() {
+    await waitFor(() => stdout.includes("\n"));
+    return identities({ stdout });
+  } };
+}
+
+test("terminal tracker rejects an unowned process identity without signalling", () => {
+  assert.throws(() => trackLifecycleTerminal({ pid: 1, onExit() {}, kill() {} }),
+    (error) => error.testCode === "INSTALL_TERMINAL_IDENTITY_INVALID" && error.cleanupFailed === true);
+});
+
+for (const after of ["setTimeout(() => {}, 60000);", "process.exit(0);"]) {
+  test(`terminal stop removes its owned ${posix ? "group" : "tree"} when the leader ${after.startsWith("setTimeout") ? "is live" : "has exited"}`,
+    { skip: !posix && after.startsWith("process.exit"), timeout: 20_000 }, async () => {
+      const fixture = terminalFixture(spawnFixture({ after }));
+      let identity;
+      try {
+        identity = await fixture.identity();
+        if (after.startsWith("process.exit")) await fixture.terminal.exited;
+        await fixture.terminal.stop();
+        await fixture.terminal.exited;
+        assert.equal(alive(identity.pid), false);
+        assert.equal(alive(identity.child), false);
+        if (posix) assert.equal(alive(-identity.pid), false);
+        await fixture.terminal.stop();
+      } finally {
+        await fixture.terminal.stop().catch(() => {});
+        if (identity) await stopFixture(identity);
+      }
+    });
+}
+
+test("POSIX terminal disposal preserves the independent Backend-style session",
+  { skip: !posix, timeout: 20_000 }, async () => {
+    const fixture = terminalFixture(spawnFixture({ detached: true }));
+    let identity;
+    try {
+      identity = await fixture.identity();
+      const exited = await fixture.terminal.exited;
+      assert.equal(exited.exitCode, 0);
+      await fixture.terminal.stop();
+      assert.equal(alive(-identity.pid), false);
+      assert.equal(alive(identity.child), true);
+    } finally {
+      await fixture.terminal.stop().catch(() => {});
+      if (identity) await stopFixture(identity);
+    }
+  });
+
+test("POSIX terminal group signal failure is retained after its leader is stopped",
+  { skip: !posix, timeout: 15_000 }, async () => {
+    const fixture = terminalFixture(spawnFixture({ detached: true, after: "setTimeout(() => {}, 60000);" }));
+    const originalKill = process.kill;
+    let identity;
+    try {
+      identity = await fixture.identity();
+      process.kill = function (pid, signal) {
+        if (pid === -identity.pid && signal === "SIGKILL") {
+          throw Object.assign(new Error("Synthetic owned-terminal signal failure"), { code: "EPERM" });
+        }
+        return originalKill.call(process, pid, signal);
+      };
+      await assert.rejects(fixture.terminal.stop(), (error) => error.code === "EPERM" && error.cleanupFailed === true);
+      assert.equal(alive(identity.pid), false);
+      assert.equal(alive(identity.child), true);
+    } finally {
+      process.kill = originalKill;
+      await fixture.terminal.stop().catch(() => {});
+      if (identity) await stopFixture(identity);
     }
   });
