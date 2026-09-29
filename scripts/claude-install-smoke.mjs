@@ -11,7 +11,7 @@ import { assertBackendReplacement, assertCredentialNotEchoed, assertSetupInputRe
   snapshotProtectedConfiguration, assertProtectedConfiguration } from "./codex-lifecycle-assertions.mjs";
 import { startLifecycleCommand } from "./claude-lifecycle-process.mjs";
 import { selectLifecyclePlugin, assertLifecycleMarketplace, snapshotClaudeSettings, assertClaudeSettings,
-  assertLifecycleHooks, assertLifecycleIntegrationAbsent } from "./claude-lifecycle-assertions.mjs";
+  assertLifecycleHooks, assertLifecycleIntegrationAbsent, classifyLifecycleRequest } from "./claude-lifecycle-assertions.mjs";
 
 const pluginName = "memorax-code-claude-adapter";
 const otherClients = ["codex", "opencode", "dsh", "codebuddy", "workbuddy", "trae", "cursor"];
@@ -37,6 +37,7 @@ let root, env, workspace, entrypoint, stateHome, claudeHome, claudeCommand, back
 let resolveInvocation, resolveNpmInvocation;
 let setupStarted = false;
 let requests = 0;
+let connectivityRequests = 0;
 let allowSearch = false;
 const memoryRequests = [];
 const endpointErrors = [];
@@ -89,7 +90,13 @@ try {
   await Promise.all([workspace, stateHome, claudeHome, join(root, "tmp")].map((path) => mkdir(path, { recursive: true })));
   backendPort = await freePort();
   endpoint = createServer(async (request, response) => {
-    if (!allowSearch) {
+    const requestKind = classifyLifecycleRequest(request.method, request.url, allowSearch);
+    if (requestKind === "connectivity") {
+      connectivityRequests += 1;
+      response.writeHead(200).end();
+      return;
+    }
+    if (requestKind === "unexpected") {
       requests += 1;
       response.writeHead(503).end();
       return;
@@ -423,7 +430,7 @@ try {
   report.outbound = { installationRequests: requests, explicitSearchRequests: memoryRequests.length,
     observation: "configured loopback endpoint", setupEndpointOverride: "initial account enrollment only",
     credentialInputOnReinstall: false };
-  report.checks.push("configured model/MemoraX endpoint received no lifecycle requests; only deliberate saved-account Search requests reached the loopback fixture");
+  report.checks.push("configured loopback endpoint received only Claude connectivity probes and deliberate saved-account Search requests; no model or automatic memory calls");
   report.status = "PASS";
 } catch (error) {
   report.stage = stage;
@@ -441,6 +448,8 @@ try {
   if (error.terminalNativeError) report.terminalNativeError = error.terminalNativeError;
 } finally {
   await cleanup();
+  report.requestCounts = { connectivity: connectivityRequests, unexpected: requests,
+    explicitSearch: memoryRequests.length, malformedSearch: endpointErrors.length };
   if (!receivedSignal) for (const [signal, handler] of signalHandlers) process.off(signal, handler);
 }
 console.log(JSON.stringify(report, null, 2));

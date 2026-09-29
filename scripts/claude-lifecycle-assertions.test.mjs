@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { assertClaudeSettings, assertLifecycleHooks, assertLifecycleIntegrationAbsent,
-  assertLifecycleMarketplace, selectLifecyclePlugin, snapshotClaudeSettings } from "./claude-lifecycle-assertions.mjs";
+  assertLifecycleMarketplace, classifyLifecycleRequest, selectLifecyclePlugin, snapshotClaudeSettings } from "./claude-lifecycle-assertions.mjs";
 
 const pluginId = "memorax-code-claude-adapter@memorax-code-local";
 const marketplaceName = "memorax-code-local";
@@ -16,6 +16,21 @@ const hooks = () => ({ hooks: { SessionStart: [{ matcher: "startup|resume", hook
 ] }] } });
 const shell = () => ({ version: 1, runtimeAbi: 1, shellVersion: "0.1.19" });
 const rejects = (run, code) => assert.throws(run, { message: code, testCode: code });
+
+test("Claude lifecycle separates exact connectivity probes from explicitly enabled Search", () => {
+  for (const allowSearch of [false, true]) {
+    assert.equal(classifyLifecycleRequest("HEAD", "/api/hello", allowSearch), "connectivity");
+    assert.equal(classifyLifecycleRequest("POST", "/saved-account/v1/memories/search", allowSearch),
+      allowSearch ? "search" : "unexpected");
+    for (const [method, path] of [["POST", "/v1/messages"], ["POST", "/v1/messages/count_tokens"],
+      ["POST", "/saved-account/v1/memories/add"], ["GET", "/api/hello"], ["HEAD", "/api/hello?query=fixture"],
+      ["HEAD", "/api/hello/"], ["HEAD", "/unknown"], ["GET", "/saved-account/v1/memories/search"],
+      ["POST", "/saved-account/v1/memories/search?query=fixture"], [undefined, undefined]]) {
+      assert.equal(classifyLifecycleRequest(method, path, allowSearch), "unexpected");
+    }
+  }
+  assert.equal(classifyLifecycleRequest("POST", "/saved-account/v1/memories/search", "true"), "unexpected");
+});
 
 test("Claude lifecycle selects the exact user plugin beside unrelated native entries", () => {
   const target = plugin();

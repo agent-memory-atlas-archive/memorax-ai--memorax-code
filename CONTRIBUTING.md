@@ -662,7 +662,8 @@ memory, and unrelated Claude settings must survive. Only MemoraX's own native
 plugin and marketplace registration may change in Claude settings. Repeated
 setup and recovery do not receive replacement account input or endpoint
 overrides; explicit Search verifies the retained account against a loopback
-receiver. Other lifecycle model and memory requests are rejected.
+receiver. Claude's exact `HEAD /api/hello` connectivity probe is counted separately;
+other lifecycle model and memory requests are rejected.
 
 The native suite checks installed plugin discovery and real Claude turns
 against a local deterministic Anthropic Messages

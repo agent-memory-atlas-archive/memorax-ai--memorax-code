@@ -3,6 +3,12 @@ import { isDeepStrictEqual } from "node:util";
 const pluginId = "memorax-code-claude-adapter@memorax-code-local";
 const marketplaceName = "memorax-code-local";
 
+export function classifyLifecycleRequest(method, path, allowSearch) {
+  if (method === "HEAD" && path === "/api/hello") return "connectivity";
+  if (allowSearch === true && method === "POST" && path === "/saved-account/v1/memories/search") return "search";
+  return "unexpected";
+}
+
 export function selectLifecyclePlugin(plugins, expectedVersion) {
   check(Array.isArray(plugins) && plugins.every((entry) => record(entry) && text(entry.id)),
     "CLAUDE_LIFECYCLE_PLUGIN_LIST_INVALID");
