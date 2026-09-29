@@ -625,10 +625,10 @@ injects a prebuilt Repo Memory bundle.
 ### Claude Native Smoke CI
 
 The same workflow adds an independent Claude Code matrix and a `Claude native
-smoke result` check. It covers native memory, scripted Skill execution, and
-permissions, but is not full functional parity with the Codex and OpenCode
-suites. It consumes the package job's exact validated tarball and installs the
-official Claude Code CLI. Version 2.1.277 is
+smoke result` check. It covers installation and upgrade lifecycle, native memory,
+scripted Skill execution, and permissions, but is not full functional parity
+with the Codex and OpenCode suites. It consumes the package job's exact validated
+tarball and installs the official Claude Code CLI. Version 2.1.277 is
 the baseline; npm's latest stable version is resolved once per run and tested
 as an exact release without fallback. Both tracks run on Ubuntu, macOS, and
 Windows with Node.js 24. Ubuntu also checks the baseline with Node.js 22,
@@ -643,8 +643,29 @@ OpenCode keep their separate results. Provider-only and OpenCode initialization
 diagnostic dispatches skip the Claude matrix and its result. The default runs
 use no model login, live-provider credentials, or paid model calls.
 
-The native suite checks fresh package installation, installed plugin discovery,
-and real Claude turns against a local deterministic Anthropic Messages
+The lifecycle suite checks rejected setup input, real-terminal cancellation and
+masked-key entry, occupied-port failure and recovery, repeated setup, stop/start,
+and uninstall/reinstall. The native Claude CLI must report the expected enabled
+user plugin and local marketplace. Installed Hook declarations, stable runtime
+shell identity, and packaged Skill content must match the candidate. Claude's
+plugin registration is not Codex Hook trust, and comparing the stable shell does
+not claim that every cached runtime file was replaced.
+
+A scoped local npm registry serves the candidate to the public updater. The
+suite upgrades published MemoraX Code 0.1.18 to the candidate, first rejecting the
+artifact download and then retrying through a real terminal. It also exercises
+the candidate's forced reinstall and a controlled npm postinstall failure after
+Backend retirement, followed by recovery. Successful replacement requires the
+old Backend process to exit and a new instance to match its health response.
+Saved account fields, explicit client and feature choices, synthetic personal
+memory, and unrelated Claude settings must survive. Only MemoraX's own native
+plugin and marketplace registration may change in Claude settings. Repeated
+setup and recovery do not receive replacement account input or endpoint
+overrides; explicit Search verifies the retained account against a loopback
+receiver. Other lifecycle model and memory requests are rejected.
+
+The native suite checks installed plugin discovery and real Claude turns
+against a local deterministic Anthropic Messages
 server and a separate local Memory receiver:
 
 | Smoke scenario | Evidence |
@@ -686,8 +707,9 @@ interrupted trace or metadata reconciliation. It separately proves native
 cancellation and the absence of cancelled-turn automatic Add through recovery.
 
 The wrappers use temporary user, Claude, and Backend homes, an isolated npm
-prefix, and synthetic credentials. The native suite checks owned-process
-cleanup before the wrappers remove the runtime. Windows uses the same
+prefix, synthetic credentials, and test-only `node-pty@1.1.0` for real terminal
+input. The lifecycle and native suites check owned-process cleanup before the
+wrappers remove the runtime. Windows uses the same
 exact-prefix user PATH cleanup guard as Codex and OpenCode, including its
 interruption and concurrent-update limitations, and CI selects `runner.temp`
 through `TEMP` and `TMP`. Native Windows execution requires PowerShell 7 and
@@ -697,7 +719,7 @@ POSIX cleanup retains owned process groups after their leaders exit. Windows
 cleanup targets live CLI process trees and the recorded Backend; arbitrary tool
 processes orphaned after their parent exits are not covered by this smoke.
 
-Upgrade/recovery, interrupted setup, uninstall/reinstall, and Repo Memory
+Controlled interruption at setup publication/startup stages and Repo Memory
 workers are not covered by these checks. Neither are Desktop/editor UI,
 ordinary-user/UAC behavior, real system credential stores, live model quality,
 or default buffered/chunked writeback. Do not report those as passed based on
@@ -708,19 +730,20 @@ and run the baseline. To reuse a validated artifact or select another exact
 Claude version:
 
 ```bash
-bash scripts/claude-install-check.sh dist/npm/tarballs 2.1.277
+bash scripts/claude-install-check.sh dist/npm/tarballs 2.1.277 0.1.18
 ```
 
 On native Windows, download the package artifact and use a disposable
 PowerShell 7 session with Node.js 22 or later, npm, and Git for Windows:
 
 ```powershell
-./scripts/claude-install-check.ps1 -TarballDirectory dist/npm/tarballs -ClaudeVersion 2.1.277
+./scripts/claude-install-check.ps1 -TarballDirectory dist/npm/tarballs -ClaudeVersion 2.1.277 -PreviousVersion 0.1.18
 ```
 
-Local `node scripts/claude-e2e.mjs [TARBALL_DIR] [CLAUDE_VERSION]` delegates to
-the platform wrappers. It does not build or validate the package itself; use
-the Make target when the artifact has not already passed `npm-package-check`.
+Local `node scripts/claude-e2e.mjs [TARBALL_DIR] [CLAUDE_VERSION] [PREVIOUS_VERSION]`
+delegates to the platform wrappers. It does not build or validate the package
+itself; use the Make target when the artifact has not already passed
+`npm-package-check`.
 
 ## Pull Requests
 

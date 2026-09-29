@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 2 || ! "$(uname -s)" =~ ^(Darwin|Linux)$ ]]; then
-  echo 'Usage (macOS/Linux): bash scripts/claude-install-check.sh TARBALL_DIR CLAUDE_VERSION' >&2
+if [[ $# -lt 2 || $# -gt 3 || ! "$(uname -s)" =~ ^(Darwin|Linux)$ ]]; then
+  echo 'Usage (macOS/Linux): bash scripts/claude-install-check.sh TARBALL_DIR CLAUDE_VERSION [PREVIOUS_VERSION]' >&2
   exit 1
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tarball_dir="$(cd "$1" && pwd)"
 claude_version="$2"
-[[ "$claude_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
-  echo 'CLAUDE_VERSION must be an exact stable version.' >&2
-  exit 1
-}
+previous_version="${3:-0.1.18}"
+npm_command="$(command -v npm)"
+for version in "$claude_version" "$previous_version"; do
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+    echo 'Client and previous package versions must be exact stable versions.' >&2
+    exit 1
+  }
+done
 set -- "$tarball_dir"/memorax-memorax-code-*.tgz
 if [[ $# -ne 1 || ! -f "$1" ]]; then
   echo 'Expected exactly one MemoraX Code tarball; run make npm-package-check first.' >&2
@@ -63,6 +67,12 @@ if [[ -e "$test_root/state/config.toml" || -e "$test_root/state/runtime/backend/
   echo 'Fresh package installation unexpectedly configured or started MemoraX Code.' >&2
   exit 1
 fi
+if ! isolated npm install --prefix "$test_root/terminal" --no-audit --no-fund \
+  --registry=https://registry.npmjs.org/ node-pty@1.1.0 \
+  > "$test_root/npm-terminal-install.log" 2>&1; then
+  echo 'The test-only terminal dependency installation failed; isolated state retained.' >&2
+  exit 1
+fi
 if ! isolated "$test_root/npm/bin/memorax-code" --help > "$test_root/product-help.log" 2>&1; then
   echo 'The installed MemoraX Code command shim failed.' >&2
   exit 1
@@ -77,6 +87,10 @@ fi
 }
 printf 'Claude Code requested: %s; installed: %s\n' "$claude_version" "$claude_version"
 
+isolated node "$repo_root/scripts/claude-install-smoke.mjs" \
+  "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$test_root/npm/bin/claude" "$tarball" "$npm_command" "$previous_version" \
+  "$test_root/terminal/node_modules/node-pty" "$repo_root/scripts/claude-setup-pty.mjs" "$claude_version"
 isolated node "$repo_root/scripts/claude-native-check.mjs" \
   "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$test_root/npm/bin/claude" "$claude_version"
@@ -84,5 +98,5 @@ isolated node "$repo_root/scripts/claude-permissions-check.mjs" \
   "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$test_root/npm/bin/claude" "$claude_version"
 
-# Each native suite confirms owned process cleanup before removing this runtime.
+# Each suite confirms owned process cleanup before removing this runtime.
 rm -rf "$test_root"

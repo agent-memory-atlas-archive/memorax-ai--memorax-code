@@ -1,10 +1,12 @@
 param(
   [Parameter(Mandatory = $true)][string]$TarballDirectory,
-  [Parameter(Mandatory = $true)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$ClaudeVersion
+  [Parameter(Mandatory = $true)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$ClaudeVersion,
+  [ValidatePattern('^\d+\.\d+\.\d+$')][string]$PreviousVersion = '0.1.18'
 )
 
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'This wrapper requires Windows.' }
+$npmCommand = (Get-Command npm.cmd).Source
 $repoRoot = Split-Path $PSScriptRoot -Parent
 $tarballs = @(Get-ChildItem -LiteralPath $TarballDirectory -File -Filter 'memorax-memorax-code-*.tgz')
 if ($tarballs.Count -ne 1) { throw 'Expected exactly one MemoraX Code tarball.' }
@@ -52,6 +54,10 @@ Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
       (Test-Path -LiteralPath (Join-Path $testRoot 'state/runtime/backend/backend.pid.json'))) {
       throw 'Fresh package installation unexpectedly configured or started MemoraX Code.'
     }
+    & npm.cmd install --prefix (Join-Path $testRoot 'terminal') --no-audit --no-fund `
+      --registry=https://registry.npmjs.org/ node-pty@1.1.0 `
+      *> (Join-Path $testRoot 'npm-terminal-install.log')
+    if ($LASTEXITCODE -ne 0) { throw 'The test-only terminal dependency installation failed; isolated state retained.' }
     & (Join-Path $prefix 'memorax-code.cmd') --help *> (Join-Path $testRoot 'product-help.log')
     if ($LASTEXITCODE -ne 0) { throw 'The installed MemoraX Code command shim failed.' }
     $versionOutput = (& (Join-Path $prefix 'claude.cmd') --version 2> (Join-Path $testRoot 'claude-version.log') | Out-String).Trim()
@@ -59,6 +65,11 @@ Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
       throw 'Installed Claude Code version does not match the requested version.'
     }
     Write-Output "Claude Code requested: $ClaudeVersion; installed: $ClaudeVersion"
+    & node (Join-Path $repoRoot 'scripts/claude-install-smoke.mjs') `
+      (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'claude.cmd') `
+      $tarball $npmCommand $PreviousVersion (Join-Path $testRoot 'terminal/node_modules/node-pty') `
+      (Join-Path $repoRoot 'scripts/claude-setup-pty.mjs') $ClaudeVersion
+    if ($LASTEXITCODE -ne 0) { throw 'The Claude installation smoke failed; isolated state retained.' }
     & node (Join-Path $repoRoot 'scripts/claude-native-check.mjs') `
       (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'claude.cmd') $ClaudeVersion
     if ($LASTEXITCODE -ne 0) { throw 'The Claude native flow check failed; isolated state retained.' }
@@ -69,6 +80,6 @@ Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
     Pop-Location
   }
 
-  # Each native suite confirms owned process cleanup before removing this runtime.
+  # Each suite confirms owned process cleanup before removing this runtime.
   Remove-Item -LiteralPath $testRoot -Recurse -Force
 }
