@@ -625,9 +625,10 @@ injects a prebuilt Repo Memory bundle.
 ### Claude Native Smoke CI
 
 The same workflow adds an independent Claude Code matrix and a `Claude native
-smoke result` check. This is the first native smoke milestone, not functional
-parity with the Codex and OpenCode suites. It consumes the package job's exact
-validated tarball and installs the official Claude Code CLI. Version 2.1.277 is
+smoke result` check. It covers native memory, scripted Skill execution, and
+permissions, but is not full functional parity with the Codex and OpenCode
+suites. It consumes the package job's exact validated tarball and installs the
+official Claude Code CLI. Version 2.1.277 is
 the baseline; npm's latest stable version is resolved once per run and tested
 as an exact release without fallback. Both tracks run on Ubuntu, macOS, and
 Windows with Node.js 24. Ubuntu also checks the baseline with Node.js 22,
@@ -643,7 +644,7 @@ diagnostic dispatches skip the Claude matrix and its result. The default runs
 use no model login, live-provider credentials, or paid model calls.
 
 The native suite checks fresh package installation, installed plugin discovery,
-and four real Claude turns against a local deterministic Anthropic Messages
+and real Claude turns against a local deterministic Anthropic Messages
 server and a separate local Memory receiver:
 
 | Smoke scenario | Evidence |
@@ -652,14 +653,37 @@ server and a separate local Memory receiver:
 | Resume and tool execution | Resume the exact session, run a real tool, and check session environment binding |
 | Redaction | Synthetic secret content stays out of outgoing Memory requests |
 | Workspace separation | A distinct workspace and native session keep content and scope separate |
+| Scripted Skill Search/Add | Native Skill and Read tools load installed guidance before a real Bash tool runs the documented CLI; actual requests and returned results retain the bound workspace |
 
-The suite also runs Search and Add through the installed `memorax-cli`, checking
-actual requests rather than treating model text as delivery. Claude creates its
-own transcript and Hook identities; test-authored transcripts and direct Hook
+The suite also runs Search and Add directly through the installed `memorax-cli`,
+checking actual requests rather than treating model text as delivery. Skill
+cases validate the installed router and complete operation reference, execute
+the documented platform entrypoint from PATH, and check the result returned to
+the model. Claude creates its own transcript and Hook identities;
+test-authored transcripts and direct Hook
 invocations are not native evidence. A deterministic local model supplies the
 responses, so these cases do not establish model quality or autonomous Skill
 selection. Content-oracle and harness unit tests run before packaging using
 local fixtures; they are separate from native-client evidence.
+
+The permission suite drives Claude's native bidirectional `stream-json`
+control protocol. It checks preallowed tools, explicit approval, denial, cancel
+at a permission request, interruption while waiting, and interruption of an
+already running Bash tool. Assertions correlate native permission requests and
+responses with the actual file effects. A normally completed denied-tool turn
+can still write back its final answer; denial is not itself an interrupted Turn.
+Cancelled cases require native interruption evidence and a subsequent completed
+turn in the same session. Only the new turn may produce automatic Add, and no
+cancelled prompt or partial answer may enter any outgoing Memory message.
+This tests client permission routing, not operating-system sandbox enforcement,
+all Claude permission modes, late approvals after cancellation, or a model's
+approval judgment.
+
+The control-protocol interruption records observed in the tested Claude versions
+do not include `interruptedMessageId`, which the current Backend uses to reconcile
+an interrupted trace on the next prompt. The suite therefore does not claim
+interrupted trace or metadata reconciliation. It separately proves native
+cancellation and the absence of cancelled-turn automatic Add through recovery.
 
 The wrappers use temporary user, Claude, and Backend homes, an isolated npm
 prefix, and synthetic credentials. The native suite checks owned-process
@@ -673,9 +697,8 @@ POSIX cleanup retains owned process groups after their leaders exit. Windows
 cleanup targets live CLI process trees and the recorded Backend; arbitrary tool
 processes orphaned after their parent exits are not covered by this smoke.
 
-Upgrade/recovery, interrupted setup, uninstall/reinstall, the full native
-permission and cancellation matrix, scripted Skill Search/Add, and Repo Memory
-workers are not covered by this milestone. Neither are Desktop/editor UI,
+Upgrade/recovery, interrupted setup, uninstall/reinstall, and Repo Memory
+workers are not covered by these checks. Neither are Desktop/editor UI,
 ordinary-user/UAC behavior, real system credential stores, live model quality,
 or default buffered/chunked writeback. Do not report those as passed based on
 this smoke result.

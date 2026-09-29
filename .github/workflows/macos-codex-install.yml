@@ -111,10 +111,10 @@ jobs:
           appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
           appendFileSync(process.env.GITHUB_STEP_SUMMARY,
             `Claude Code baseline: **${baseline}**; npm latest resolved for this run: **${latest}**.\n\n` +
-            `${include.length} required native smoke jobs; no version fallback. This is not full functional parity.\n`);
+            `${include.length} required native memory, Skill and permission jobs; no version fallback. This is not full functional parity.\n`);
           NODE
       - name: Verify test assertions reject malformed content and unexpected failures
-        run: node --test scripts/codex-native-content-check.test.mjs scripts/codex-lifecycle-assertions.test.mjs scripts/codex-writeback-diagnostics.test.mjs scripts/opencode-native-support.test.mjs scripts/opencode-initialization-diagnostic.test.mjs scripts/opencode-initialization-layouts.test.mjs scripts/claude-native-content-check.test.mjs scripts/claude-native-support.test.mjs
+        run: node --test scripts/codex-native-content-check.test.mjs scripts/codex-lifecycle-assertions.test.mjs scripts/codex-writeback-diagnostics.test.mjs scripts/opencode-native-support.test.mjs scripts/opencode-initialization-diagnostic.test.mjs scripts/opencode-initialization-layouts.test.mjs scripts/claude-native-content-check.test.mjs scripts/claude-native-support.test.mjs scripts/claude-permissions-support.test.mjs
       - name: Build and validate the installable package
         id: package-check
         shell: bash
@@ -247,7 +247,7 @@ jobs:
         with:
           name: memorax-code-package
           path: dist/npm/tarballs
-      - name: Verify installed Claude plugin and native memory smoke (macOS/Linux)
+      - name: Verify installed Claude plugin, native memory, Skill and permissions (macOS/Linux)
         if: runner.os != 'Windows'
         shell: bash
         env:
@@ -257,7 +257,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/codex-install-user-path.test.ps1
-      - name: Verify installed Claude plugin and native memory smoke (Windows)
+      - name: Verify installed Claude plugin, native memory, Skill and permissions (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         env:
@@ -357,7 +357,7 @@ jobs:
           PACKAGE_RESULT: ${{ needs.package.result }}
           CLAUDE_RESULT: ${{ needs.claude.result }}
         run: |
-          printf 'Package: **%s**\n\nClaude native smoke matrix: **%s**\n\nThis first milestone does not provide full functional parity.\n' "$PACKAGE_RESULT" "$CLAUDE_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Package: **%s**\n\nClaude native smoke matrix: **%s**\n\nNative memory, Skill and permission checks do not provide full lifecycle or Repo Memory parity.\n' "$PACKAGE_RESULT" "$CLAUDE_RESULT" >> "$GITHUB_STEP_SUMMARY"
           if [[ "$PACKAGE_RESULT" != success || "$CLAUDE_RESULT" != success ]]; then
             echo '::error::All package and Claude native smoke matrix jobs must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
             exit 1

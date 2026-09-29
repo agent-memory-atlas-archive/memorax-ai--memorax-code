@@ -3,8 +3,9 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, realpath } from "node:fs/promises";
 import { basename, isAbsolute, join, relative } from "node:path";
 import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, searchResult, waitFor } from "./claude-native-support.mjs";
-import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertWritebackMessages, expectedSearchAnswer } from "./codex-native-content-check.mjs";
-import { assertExactText, selectNativeMemoraxPlugin, selectNativeTurnContent } from "./claude-native-content-check.mjs";
+import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
+  assertWritebackMessages, expectedSearchAnswer } from "./codex-native-content-check.mjs";
+import { assertExactText, assertNativeReadText, selectNativeMemoraxPlugin, selectNativeTurnContent } from "./claude-native-content-check.mjs";
 
 const report = { status: "FAIL", scope: "native_claude_installed_plugin_mock_memorax", platform: process.platform,
   paidModelRequests: 0, modelQualityEvaluated: false, checks: [], contentChecks: [],
@@ -15,7 +16,7 @@ const toolCanary = "CLAUDE_TOOL_OUTPUT_MUST_STAY_LOCAL";
 const commentaryCanary = "CLAUDE_INTERMEDIATE_TEXT_MUST_STAY_LOCAL";
 const redactionCanary = "sk_nativeFixtureOnlyAbcdefghijklmnop";
 const expectedTurns = [], workspaceControls = new Map();
-let harness, pluginSource, pluginCache, pluginVersion, stage = "prerequisites";
+let harness, pluginSource, pluginCache, pluginVersion, loadedPluginPath, stage = "prerequisites";
 try {
   check(process.argv.length === 5, "EXPECTED_INSTALLED_PACKAGE_CLAUDE_PATH_AND_VERSION");
   harness = await createNativeHarness({ packageRoot: process.argv[2], claudeCommand: process.argv[3],
@@ -101,22 +102,67 @@ try {
   const added = JSON.parse((await harness.runMemory(["add", "--memory", memory, "--type", "procedural",
     "--reason", reason, "--session-id", first, "--json"], { env })).stdout);
   check(added.ok === true && added.action === "memory.add" && added.receipt?.accepted === true, "DIRECT_ADD_NOT_ACCEPTED");
-  for (const result of [searched, added]) check(result.baseUserId === fixtureUser
-    && result.effectiveUserId === `${fixtureUser}@${basename(harness.workspace)}`
-    && result.workspace === basename(harness.workspace) && result.scopeKind === "local-directory"
-    && result.workspaceScope === "bound", "DIRECT_MEMORY_SCOPE_RESULT_MISMATCH");
+  for (const result of [searched, added]) assertScopeResult(result, "DIRECT_MEMORY_SCOPE_RESULT_MISMATCH");
   check(harness.memoryRequests.length === before + 3, "DIRECT_MEMORY_REQUEST_COUNT_MISMATCH");
   verifyExplicitRequest(harness.memoryRequests[before], { operation: "search", value: query });
   verifyExplicitRequest(harness.memoryRequests[before + 1], { operation: "search", value: query });
   verifyExplicitRequest(harness.memoryRequests[before + 2], { operation: "add", value: memory, reason, sessionId: first });
   report.checks.push("installed Search/Add preserve scoped payloads, receipts and default Search output");
 
+  const skillRoot = join(loadedPluginPath, "skills", "memorax-code");
+  const skillText = await readFile(join(skillRoot, "SKILL.md"), "utf8");
+  const skillBody = skillText.slice(skillText.indexOf("# MemoraX Code\n"));
+  check(skillBody.startsWith("# MemoraX Code\n"), "NATIVE_SKILL_ROUTER_INVALID");
+  for (const operation of ["search", "add"]) {
+    stage = `native Skill ${operation}`;
+    const reference = join(skillRoot, "references", `memorax-${operation}.md`);
+    const referenceText = await readFile(reference, "utf8");
+    const executable = assertSkillReferenceContract(referenceText, operation, process.platform);
+    const query = "Native Skill parser validation: which invariant applies?";
+    const memory = "The native Skill preserves parser validation before interpretation.";
+    const reason = "Keep the verified parser validation lesson.";
+    const args = operation === "search" ? ["search", "--query", query, "--json"]
+      : ["add", "--memory", memory, "--type", "procedural", "--reason", reason, "--json"];
+    const before = harness.memoryRequests.length;
+    const answer = operation === "search" ? `Recalled Coding Memory: ${searchResult}` : "Native Skill Add accepted.";
+    await turn({ sessionId: first, prompt: `Use the memorax-code skill to ${operation} the parser validation lesson.`,
+      answer, kind: `skill-${operation}`, explicitRequests: 1, args: ["--allowedTools", "Skill", "Read", "Bash"], steps: [
+        (body) => ({ toolCalls: [toolCall(body, "Skill", { skill: `${pluginName}:memorax-code` }, `load-${operation}`)] }),
+        (body) => {
+          toolResult(body, `load-${operation}`);
+          assertCompleteText(inputText(body), skillBody, "NATIVE_SKILL_ROUTER_INCOMPLETE");
+          return { toolCalls: [toolCall(body, "Read", { file_path: reference }, `read-${operation}`)] };
+        },
+        (body) => {
+          assertNativeReadText(toolResult(body, `read-${operation}`), referenceText);
+          return { toolCalls: [toolCall(body, "Bash", { command: shellCommand([executable, ...args]),
+            description: `Run the installed Coding Memory ${operation} command`, timeout: 15000 }, `memory-${operation}`)] };
+        },
+        (body) => {
+          const result = JSON.parse(toolResult(body, `memory-${operation}`).trim());
+          if (operation === "search") assertSearchResult(result, { query, memory: searchResult });
+          else check(result.ok === true && result.action === "memory.add" && result.receipt?.accepted === true,
+            "NATIVE_SKILL_ADD_RESULT_MISMATCH");
+          assertScopeResult(result);
+          return { text: answer };
+        },
+      ] });
+    const explicit = harness.memoryRequests.slice(before).filter((entry) => operation === "search"
+      ? entry.path === "/v1/memories/search" : entry.body.metadata?.source_detail === "memorax_code_memory_cli");
+    check(explicit.length === 1, "NATIVE_SKILL_EXPLICIT_REQUEST_COUNT_MISMATCH");
+    // SessionStart supplies trace scope, not a memory CLI session override.
+    verifyExplicitRequest(explicit[0], { operation, value: operation === "search" ? query : memory, reason, sessionId: "memorax-cli" });
+  }
+  report.skillExecutionValidated = true;
+  report.checks.push("real Skill and Read tools load complete installed guidance before PATH-discovered Search/Add, with results returned to the model");
+
   stage = "native transcript authority and outbound isolation";
   for (const expected of expectedTurns) await verifyNativeTranscript(expected);
   for (const request of harness.memoryRequests) {
     check(request.authorization === `Token ${fixtureKey}`, "MEMORY_AUTHORIZATION_MISMATCH");
     const payload = JSON.stringify(request.body);
-    for (const forbidden of [fixtureKey, redactionCanary, toolCanary, commentaryCanary, harness.root, harness.root.replaceAll("\\", "/")]) {
+    for (const forbidden of [fixtureKey, redactionCanary, toolCanary, commentaryCanary, "## Authority Router",
+      "# MemoraX Code Coding Memory Search", "# MemoraX Code Coding Memory Add", harness.root, harness.root.replaceAll("\\", "/")]) {
       check(!payload.includes(JSON.stringify(forbidden).slice(1, -1)), "LOCAL_OR_SENSITIVE_CONTENT_ENTERED_MEMORY_PAYLOAD");
     }
     if (Array.isArray(request.body.messages)) {
@@ -126,16 +172,23 @@ try {
         [...workspaceControls].filter(([name]) => name !== workspace).flatMap(([, content]) => content));
     }
   }
-  check(harness.memoryRequests.filter((request) => request.path === "/v1/memories/search").length === 2,
+  const trace = (await readFile(join(harness.stateHome, "debug", "traces", "claude", "sessions", first, "events.jsonl"), "utf8"))
+    .trim().split(/\r?\n/).map(JSON.parse);
+  check(trace.filter((event) => event.type === "memory_cli_search").length === 3
+    && trace.filter((event) => event.type === "memory_cli_add").length === 2,
+    "NATIVE_SKILL_TRACE_BINDING_MISSING");
+  check(!trace.some((event) => event.type === "memory_retrieve"), "LEGACY_AUTOMATIC_SEARCH_RETURNED");
+  check(harness.memoryRequests.filter((request) => request.path === "/v1/memories/search").length === 3,
     "UNEXPECTED_AUTOMATIC_SEARCH");
-  check(harness.modelRequests.length === 5 && harness.memoryRequests.length === 7 && harness.serverErrors.length === 0,
+  check(harness.modelRequests.length === 13 && harness.memoryRequests.length === 11 && harness.serverErrors.length === 0,
     "NATIVE_REQUEST_COUNT_OR_RECEIVER_MISMATCH");
   report.checks.push("complete native text, prompt identities, native timestamps, redaction and workspace isolation");
   report.status = "PASS";
   report.nativeSessions = 2;
   report.nativeTurns = expectedTurns.length;
   report.modelRequests = harness.modelRequests.length;
-  report.memoryRequests = { automaticAdd: 4, explicitAdd: 1, explicitSearch: 2 };
+  report.memoryRequests = { automaticAdd: 6, explicitAdd: 2, explicitSearch: 3 };
+  report.skillExecutionMode = "scripted model tool calls; natural-language instruction following is not evaluated";
   report.model = fixtureModel;
   report.executionMode = "scripted local model responses; model instruction following is not evaluated";
 } catch (error) {
@@ -155,7 +208,7 @@ console.log(JSON.stringify(report, null, 2));
 if (report.status !== "PASS") process.exitCode = 1;
 
 async function turn({ prompt, answer, sessionId, cwd = harness.workspace, expectedPrompt = prompt, kind,
-  args = [], steps = [() => ({ text: answer })] }) {
+  args = [], explicitRequests = 0, steps = [() => ({ text: answer })] }) {
   let step = 0;
   const before = harness.memoryRequests.length;
   const tools = [];
@@ -176,6 +229,7 @@ async function turn({ prompt, answer, sessionId, cwd = harness.workspace, expect
     && result[0].session_id === output.sessionId, "NATIVE_TURN_RESULT_MISMATCH");
   const installedPath = await realpath(selectNativeMemoraxPlugin(init[0].plugins).path);
   check(installedPath === pluginSource || installedPath === pluginCache, "NATIVE_LOADED_PLUGIN_PATH_MISMATCH");
+  loadedPluginPath = installedPath;
   const manifest = JSON.parse(await readFile(join(installedPath, ".claude-plugin", "plugin.json"), "utf8"));
   check(manifest.name === pluginName && manifest.version === pluginVersion, "NATIVE_PLUGIN_MANIFEST_MISMATCH");
   check(init[0].skills?.includes(`${pluginName}:memorax-code`), "NATIVE_INSTALLED_SKILL_NOT_DISCOVERED");
@@ -186,9 +240,12 @@ async function turn({ prompt, answer, sessionId, cwd = harness.workspace, expect
     && event.message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n\n") === output.text);
   check(final.length === 1 && typeof final[0].uuid === "string" && final[0].session_id === output.sessionId,
     "NATIVE_FINAL_ASSISTANT_IDENTITY_MISSING");
-  await waitFor(() => harness.memoryRequests.length >= before + 1, "NATIVE_STOP_DID_NOT_WRITE_BACK");
-  check(harness.memoryRequests.length === before + 1, "NATIVE_TURN_MEMORY_REQUEST_COUNT_MISMATCH");
-  const request = harness.memoryRequests[before], body = request.body;
+  await waitFor(() => harness.memoryRequests.length >= before + 1 + explicitRequests, "NATIVE_STOP_DID_NOT_WRITE_BACK");
+  check(harness.memoryRequests.length === before + 1 + explicitRequests, "NATIVE_TURN_MEMORY_REQUEST_COUNT_MISMATCH");
+  const automatic = harness.memoryRequests.slice(before).filter((request) =>
+    request.body.metadata?.idempotency_key?.startsWith("automatic:claude-code:"));
+  check(automatic.length === 1, "NATIVE_AUTOMATIC_ADD_COUNT_MISMATCH");
+  const [request] = automatic, body = request.body;
   check(request.method === "POST" && request.path === "/v1/memories/add", "NATIVE_AUTOMATIC_ADD_TRANSPORT_MISMATCH");
   assertWritebackMessages(body.messages);
   assertCompleteText(body.messages[0].content, expectedPrompt, "NATIVE_WRITEBACK_PROMPT_MISMATCH");
@@ -225,6 +282,12 @@ async function verifyNativeTranscript(expected) {
       && event.trace.session_id === expected.sessionId && event.trace.turn_id === selected.promptId),
     "NATIVE_HOOK_PROMPT_CORRELATION_MISSING");
   }
+  if (expected.kind.startsWith("skill-")) {
+    const type = `memory_cli_${expected.kind.slice("skill-".length)}`;
+    const events = trace.filter((event) => event.type === type && event.trace?.client === "claude"
+      && event.trace.session_id === expected.sessionId && event.trace.turn_id === selected.promptId);
+    check(events.length === 1 && events[0].ok === true, "NATIVE_SKILL_TRACE_BINDING_MISMATCH");
+  }
   for (const tool of expected.tools) {
     const calls = selected.lineage.flatMap((record) => Array.isArray(record.message?.content) ? record.message.content : [])
       .filter((part) => part.type === "tool_use" && part.id === tool.id && part.name === tool.name);
@@ -258,6 +321,15 @@ function verifyExplicitRequest(request, { operation, value, reason, sessionId })
     && body.metadata.memorax_code_memory_reason === reason, "EXPLICIT_ADD_METADATA_MISMATCH");
 }
 function hash(value) { return createHash("sha256").update(value).digest("hex").slice(0, 16); }
+function assertScopeResult(result, code = "NATIVE_SKILL_MEMORY_SCOPE_RESULT_MISMATCH") {
+  check(result.baseUserId === fixtureUser && result.effectiveUserId === `${fixtureUser}@${basename(harness.workspace)}`
+    && result.workspace === basename(harness.workspace) && result.scopeKind === "local-directory"
+    && result.workspaceScope === "bound", code);
+}
+function toolCall(body, name, input, id) {
+  check(body.tools?.some((tool) => tool.name === name), "NATIVE_REQUIRED_TOOL_MISSING");
+  return { id, name, input };
+}
 function within(root, path) { const nested = relative(root, path); return Boolean(nested) && !nested.startsWith("..") && !isAbsolute(nested); }
 function inputText(body) {
   const text = [];

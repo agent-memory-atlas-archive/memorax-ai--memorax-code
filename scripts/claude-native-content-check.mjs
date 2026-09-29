@@ -7,6 +7,14 @@ export function assertExactText(actual, expected, code = "NATIVE_CONTENT_MISMATC
   check(typeof actual === "string" && actual === expected, code);
 }
 
+export function assertNativeReadText(actual, expected) {
+  check(typeof actual === "string" && typeof expected === "string" && expected.length > 0, "NATIVE_SKILL_REFERENCE_INVALID");
+  const lines = actual.split(/\r?\n/).map((line) => line.match(/^ *(\d+)\t(.*)$/)).filter(Boolean);
+  const expectedLines = expected.split(/\r?\n/);
+  check(lines.length === expectedLines.length && lines.every((line, index) =>
+    Number(line[1]) === index + 1 && line[2] === expectedLines[index]), "NATIVE_SKILL_REFERENCE_INCOMPLETE");
+}
+
 export function selectNativeMemoraxPlugin(plugins) {
   check(Array.isArray(plugins) && plugins.every((plugin) => plugin && typeof plugin === "object"
     && !Array.isArray(plugin) && typeof plugin.name === "string" && plugin.name.length > 0), "NATIVE_PLUGIN_LIST_INVALID");

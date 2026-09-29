@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assertExactText, selectNativeMemoraxPlugin, selectNativeTurnContent } from "./claude-native-content-check.mjs";
+import { assertExactText, assertNativeReadText, selectNativeMemoraxPlugin, selectNativeTurnContent } from "./claude-native-content-check.mjs";
 
 const identity = { sessionId: "session-fixture", assistantUuid: "assistant-final", prompt: "Native prompt.", answer: "Native answer." };
 const user = () => ({ type: "user", sessionId: identity.sessionId, uuid: "user-prompt", parentUuid: null,
@@ -10,6 +10,18 @@ const assistant = () => ({ type: "assistant", sessionId: identity.sessionId, uui
   message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: identity.answer }] } });
 const fails = (records, code, options = identity) => assert.throws(() => selectNativeTurnContent(records, options),
   (error) => error.nativeCode === code && error.message === code);
+
+test("Claude native Read oracle requires every installed reference line in order", () => {
+  const reference = "# Reference\n\nRun the documented command.\n";
+  const numbered = "1\t# Reference\n2\t\n3\tRun the documented command.\n4\t";
+  assertNativeReadText(`${numbered}\n\n<system-reminder>Native tool footer.</system-reminder>`, reference);
+  assertNativeReadText(numbered.replaceAll("\n", "\r\n"), reference.replaceAll("\n", "\r\n"));
+  for (const actual of ["# Reference", numbered.replace("2\t", "4\t"), numbered.replace("3\t", "2\t"),
+    numbered.replace("Run the documented command.", "Run a different command."), numbered.split("\n").slice(0, 2).join("\n"),
+    `${numbered}\n5\tUnexpected content.`]) {
+    assert.throws(() => assertNativeReadText(actual, reference), { nativeCode: "NATIVE_SKILL_REFERENCE_INCOMPLETE" });
+  }
+});
 
 test("Claude native plugin discovery selects only the exact target beside native built-ins", () => {
   const plugin = { name: "memorax-code-claude-adapter", path: "/fixture/installed-plugin" };

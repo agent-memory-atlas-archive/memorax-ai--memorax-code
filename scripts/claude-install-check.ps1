@@ -62,10 +62,13 @@ Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
     & node (Join-Path $repoRoot 'scripts/claude-native-check.mjs') `
       (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'claude.cmd') $ClaudeVersion
     if ($LASTEXITCODE -ne 0) { throw 'The Claude native flow check failed; isolated state retained.' }
+    & node (Join-Path $repoRoot 'scripts/claude-permissions-check.mjs') `
+      (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'claude.cmd') $ClaudeVersion
+    if ($LASTEXITCODE -ne 0) { throw 'The Claude native permission check failed; isolated state retained.' }
   } finally {
     Pop-Location
   }
 
-  # The native suite confirms owned process cleanup before removing this runtime.
+  # Each native suite confirms owned process cleanup before removing this runtime.
   Remove-Item -LiteralPath $testRoot -Recurse -Force
 }

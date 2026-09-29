@@ -80,6 +80,9 @@ printf 'Claude Code requested: %s; installed: %s\n' "$claude_version" "$claude_v
 isolated node "$repo_root/scripts/claude-native-check.mjs" \
   "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$test_root/npm/bin/claude" "$claude_version"
+isolated node "$repo_root/scripts/claude-permissions-check.mjs" \
+  "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$test_root/npm/bin/claude" "$claude_version"
 
-# The native suite confirms owned process cleanup before removing this runtime.
+# Each native suite confirms owned process cleanup before removing this runtime.
 rm -rf "$test_root"
