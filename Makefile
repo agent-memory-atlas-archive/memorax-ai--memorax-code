@@ -1,4 +1,4 @@
-.PHONY: test test-ts test-adapter-common test-shared-skill test-codex-adapter test-claude-adapter test-dsh-adapter test-dsh-e2e test-opencode-adapter test-opencode-e2e test-codebuddy-adapter test-trae-adapter test-cursor-adapter test-npm-package docs-check npm-package-build npm-package-check npm-publish-dry-run release-version-check clean
+.PHONY: test test-ts test-adapter-common test-shared-skill test-codex-adapter test-claude-adapter test-claude-e2e test-dsh-adapter test-dsh-e2e test-opencode-adapter test-opencode-e2e test-codebuddy-adapter test-trae-adapter test-cursor-adapter test-npm-package docs-check npm-package-build npm-package-check npm-publish-dry-run release-version-check clean
 
 NPM ?= npm
 
@@ -29,6 +29,9 @@ test-codex-adapter:
 
 test-claude-adapter:
 	$(NPM) test --prefix packages/ts/memorax-code-claude-adapter
+
+test-claude-e2e: npm-package-check
+	node scripts/claude-e2e.mjs
 
 test-dsh-adapter:
 	$(NPM) test --prefix packages/ts/memorax-code-dsh-adapter

@@ -317,12 +317,15 @@ prose accuracy or command behavior.
 Native Windows package smoke coverage lives in
 [windows-npm-package-e2e.mjs](scripts/windows-npm-package-e2e.mjs). The separate
 [Codex](scripts/windows-codex-e2e.mjs) and
-[Claude](scripts/windows-claude-e2e.mjs) runners use real clients. Inspect each
-script's prerequisites and isolation before using it; a macOS/Linux suite or
+[Claude](scripts/windows-claude-e2e.mjs) runners use real clients for installation.
+The older Claude runner supplies synthetic Hook inputs; it does not establish
+native conversation or transcript writeback. Inspect each script's prerequisites
+and isolation before using it; a macOS/Linux suite or
 WSL run does not replace native Windows validation.
 
 Live-provider, MemoraX-backed, and live Jev checks are explicit opt-in tests.
-The credential-free native Codex and OpenCode checks below run by default on PRs. Report
+The credential-free Codex and OpenCode functional checks and Claude native smoke
+below run by default on PRs. Report
 native-client and synthetic evidence separately, record platform and scenarios,
 redact output, and explain any relevant checks not run. Public fixtures must never contain
 real API keys, private transcripts, personal memory, or infrastructure
@@ -618,6 +621,150 @@ Codex, including its interruption and concurrent-update limitations. Local
 `node scripts/opencode-e2e.mjs [TARBALL_DIR] [OPENCODE_VERSION]` delegates to
 these platform wrappers; it no longer creates a separate candidate package or
 injects a prebuilt Repo Memory bundle.
+
+### Claude Native Smoke CI
+
+The same workflow adds an independent Claude Code matrix and a `Claude native
+smoke result` check. It covers the shared installation, upgrade recovery, setup
+interruption, native memory, scripted Skill, permission, and Repo Memory global
+configuration categories. Client-specific evidence and exclusions below still
+differ from the Codex and OpenCode suites. It consumes the package job's exact
+validated tarball and installs the official Claude Code CLI. Version 2.1.277 is
+the baseline; npm's latest stable version is resolved once per run and tested
+as an exact release without fallback. Both tracks run on Ubuntu, macOS, and
+Windows with Node.js 24. Ubuntu also checks the baseline with Node.js 22,
+matching the official Claude npm package's minimum runtime rather than
+MemoraX Code's Node.js 20 minimum. When latest equals baseline, the Node.js 24
+jobs cover both tracks without duplicates. Requested and installed Claude
+versions must match.
+
+The result requires the package job and every Claude smoke matrix job to
+succeed. Failed, cancelled, or skipped dependencies cannot pass it. Codex and
+OpenCode keep their separate results. Provider-only and OpenCode initialization
+diagnostic dispatches skip the Claude matrix and its result. The default runs
+use no model login, live-provider credentials, or paid model calls.
+
+The lifecycle suite checks rejected setup input, real-terminal cancellation and
+masked-key entry, occupied-port failure and recovery, repeated setup, stop/start,
+and uninstall/reinstall. The native Claude CLI must report the expected enabled
+user plugin and local marketplace. Installed Hook declarations, stable runtime
+shell identity, and packaged Skill content must match the candidate. Claude's
+plugin registration is not Codex Hook trust, and comparing the stable shell does
+not claim that every cached runtime file was replaced.
+
+A scoped local npm registry serves the candidate to the public updater. The
+suite upgrades published MemoraX Code 0.1.18 to the candidate, first rejecting the
+artifact download and then retrying through a real terminal. It also exercises
+the candidate's forced reinstall and a controlled npm postinstall failure after
+Backend retirement, followed by recovery. Successful replacement requires the
+old Backend process to exit and a new instance to match its health response.
+Saved account fields, explicit client and feature choices, synthetic personal
+memory, and unrelated Claude settings must survive. Only MemoraX's own native
+plugin and marketplace registration may change in Claude settings. Repeated
+setup and recovery do not receive replacement account input or endpoint
+overrides; explicit Search verifies the retained account against a loopback
+receiver. Claude's exact `HEAD /api/hello` connectivity probe is counted separately;
+other lifecycle model and memory requests are rejected.
+
+The interruption suite terminates real setup after configuration publication,
+before Backend startup, and after a healthy Backend exists but before completion.
+Test-only process-entry gates and the real Backend lifecycle lock hold those
+stages. A fourth case cancels at the masked replacement-key prompt. Each case
+requires the saved account and unrelated Claude settings to remain intact, no
+false completion record, an ordinary retry without account input, native Claude
+readiness, and a Search using the saved account. These controlled process
+interruptions do not simulate power loss.
+
+The native suite checks installed plugin discovery and real Claude turns
+against a local deterministic Anthropic Messages
+server and a separate local Memory receiver:
+
+| Smoke scenario | Evidence |
+| --- | --- |
+| Initial conversation | Native Claude session, prompt, Hooks, and transcript; complete selected Unicode content in automatic Add |
+| Resume and tool execution | Resume the exact session, run a real tool, and check session environment binding |
+| Redaction | Synthetic secret content stays out of outgoing Memory requests |
+| Workspace separation | A distinct workspace and native session keep content and scope separate |
+| Scripted Skill Search/Add | Native Skill and Read tools load installed guidance before a real Bash tool runs the documented CLI; actual requests and returned results retain the bound workspace |
+
+The suite also runs Search and Add directly through the installed `memorax-cli`,
+checking actual requests rather than treating model text as delivery. Skill
+cases validate the installed router and complete operation reference, execute
+the documented platform entrypoint from PATH, and check the result returned to
+the model. Claude creates its own transcript and Hook identities;
+test-authored transcripts and direct Hook
+invocations are not native evidence. A deterministic local model supplies the
+responses, so these cases do not establish model quality or autonomous Skill
+selection. Content-oracle and harness unit tests run before packaging using
+local fixtures; they are separate from native-client evidence.
+
+The native suite also starts a real Repo Memory worker from a foreground turn
+in an isolated Git repository. Foreground and worker requests must use the
+configured global model and loopback provider with synthetic credentials. The
+worker request must contain the complete supervised job prompt, and its no-op
+response must produce `artifact_validation_failed` after a successful native
+client exit, with no Memory requests. Job ownership and owned-process exit are
+checked separately. Claude's worker uses `--no-session-persistence`, so this case
+does not require or claim a persisted background transcript. It does not prove
+successful Repo Memory generation, temporary foreground model/provider override
+inheritance, or permission inheritance.
+
+The permission suite drives Claude's native bidirectional `stream-json`
+control protocol. It checks preallowed tools, explicit approval, denial, cancel
+at a permission request, interruption while waiting, and interruption of an
+already running Bash tool. Assertions correlate native permission requests and
+responses with the actual file effects. A normally completed denied-tool turn
+can still write back its final answer; denial is not itself an interrupted Turn.
+Cancelled cases require native interruption evidence and a subsequent completed
+turn in the same session. Only the new turn may produce automatic Add, and no
+cancelled prompt or partial answer may enter any outgoing Memory message.
+This tests client permission routing, not operating-system sandbox enforcement,
+all Claude permission modes, late approvals after cancellation, or a model's
+approval judgment.
+
+The control-protocol interruption records observed in the tested Claude versions
+do not include `interruptedMessageId`, which the current Backend uses to reconcile
+an interrupted trace on the next prompt. The suite therefore does not claim
+interrupted trace or metadata reconciliation. It separately proves native
+cancellation and the absence of cancelled-turn automatic Add through recovery.
+
+The wrappers use temporary user, Claude, and Backend homes, an isolated npm
+prefix, synthetic credentials, and test-only `node-pty@1.1.0` for real terminal
+input. Each suite checks owned-process cleanup before the wrappers remove the
+runtime. Windows uses the same
+exact-prefix user PATH cleanup guard as Codex and OpenCode, including its
+interruption and concurrent-update limitations, and CI selects `runner.temp`
+through `TEMP` and `TMP`. Native Windows execution requires PowerShell 7 and
+Git for Windows; WSL is not Windows coverage. Reports exclude private homes,
+raw transcripts, model output, credentials, and Backend tokens.
+POSIX cleanup retains owned process groups after their leaders exit. Windows
+cleanup targets live CLI process trees and the recorded Backend; arbitrary tool
+processes orphaned after their parent exits are not covered by this smoke.
+
+These checks do not cover Desktop/editor UI,
+ordinary-user/UAC behavior, real system credential stores, live model quality,
+or default buffered/chunked writeback. Do not report those as passed based on
+this smoke result.
+
+On macOS or Linux, use `memorax_dev make test-claude-e2e` to validate the package
+and run the baseline. To reuse a validated artifact or select another exact
+Claude version:
+
+```bash
+bash scripts/claude-install-check.sh dist/npm/tarballs 2.1.277 0.1.18
+```
+
+On native Windows, download the package artifact and use a disposable
+PowerShell 7 session with Node.js 22 or later, npm, and Git for Windows:
+
+```powershell
+./scripts/claude-install-check.ps1 -TarballDirectory dist/npm/tarballs -ClaudeVersion 2.1.277 -PreviousVersion 0.1.18
+```
+
+Local `node scripts/claude-e2e.mjs [TARBALL_DIR] [CLAUDE_VERSION] [PREVIOUS_VERSION]`
+delegates to the platform wrappers. It does not build or validate the package
+itself; use the Make target when the artifact has not already passed
+`npm-package-check`.
 
 ## Pull Requests
 
