@@ -7,7 +7,7 @@ import { isDeepStrictEqual } from "node:util";
 import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, waitFor } from "./claude-native-support.mjs";
 import { assertCompleteText, assertNoForeignContent, assertWritebackMessages } from "./codex-native-content-check.mjs";
 import { selectNativeMemoraxPlugin, selectNativeTurnContent } from "./claude-native-content-check.mjs";
-import { ClaudeControlSession, permissionArguments, selectInterruptedTurn, textContent } from "./claude-permissions-support.mjs";
+import { ClaudeControlSession, permissionArguments, selectInterruptedTurn, summarizePermissionToolResult, textContent } from "./claude-permissions-support.mjs";
 
 const cases = [
   { id: "policy-allow", preallowed: true, writes: true },
@@ -53,6 +53,7 @@ try {
       check(body.tools?.some((tool) => tool.name === current.tool.name), "PERMISSION_NATIVE_TOOL_NOT_ADVERTISED");
       return { text: current.intermediate, toolCalls: [current.tool] };
     }
+    if (current.test.inflight) current.earlyToolResult ??= summarizePermissionToolResult(modelToolResult(body));
     check(!current.test.interrupted, "INTERRUPTED_PERMISSION_CONTINUED_MODEL_EXECUTION");
     const result = modelToolResult(body);
     check((result.is_error === true) === !current.test.writes, "PERMISSION_NATIVE_TOOL_RESULT_MISMATCH");
@@ -185,6 +186,7 @@ try {
   report.error = error.nativeCode ?? "PERMISSION_CHECK_FAILED_PRIVATE_OUTPUT_SUPPRESSED";
   report.receiverErrors = harness?.serverErrors ?? [];
   if (current) report.activeCaseModelRequests = current.modelRequests;
+  if (current?.earlyToolResult) report.unexpectedInflightToolResult = current.earlyToolResult;
 } finally {
   let cleanupError;
   try { control?.endInput(); } catch (error) { cleanupError = error; }

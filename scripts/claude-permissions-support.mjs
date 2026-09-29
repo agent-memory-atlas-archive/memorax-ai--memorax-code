@@ -8,6 +8,31 @@ export function permissionArguments({ allowedTool } = {}) {
     ...(allowedTool ? ["--allowedTools", allowedTool] : [])];
 }
 
+export function summarizePermissionToolResult(result) {
+  const content = result?.content;
+  const supported = typeof content === "string" || (Array.isArray(content)
+    && content.every((part) => part?.type === "text" && typeof part.text === "string"));
+  const text = supported ? textContent(content) : "";
+  const exit = text.match(/^Exit code (0|[1-9]\d{0,2})(?:\r?\n|$)/);
+  const signatures = [
+    ["syntax_error", /\bSyntaxError:/],
+    ["reference_error", /\bReferenceError:/],
+    ["invalid_unicode_escape", /Invalid Unicode escape sequence/],
+    ["invalid_token", /Invalid or unexpected token/],
+    ["enoent", /\bENOENT\b/],
+    ["eacces", /\bEACCES\b/],
+    ["eperm", /\bEPERM\b/],
+    ["command_not_found", /: command not found(?:\r?\n|$)/],
+    ["shell_syntax_error", /syntax error near unexpected token/],
+    ["tool_use_error", /<tool_use_error>/],
+    ["timeout", /\b(?:timed out|ETIMEDOUT)\b/i],
+  ].filter(([, pattern]) => pattern.test(text)).map(([name]) => name);
+  return { isError: typeof result?.is_error === "boolean" ? result.is_error : null,
+    contentSupported: supported, textBytes: Buffer.byteLength(text),
+    exitCode: exit && Number(exit[1]) <= 255 ? Number(exit[1]) : null,
+    signatures };
+}
+
 // The official Agent SDK uses this same CLI wire protocol. No SDK hooks, tools,
 // transcript substitutions, or permission callbacks execute the fixture tool.
 export class ClaudeControlSession {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import test from "node:test";
-import { ClaudeControlSession, permissionArguments, selectInterruptedTurn } from "./claude-permissions-support.mjs";
+import { ClaudeControlSession, permissionArguments, selectInterruptedTurn, summarizePermissionToolResult } from "./claude-permissions-support.mjs";
 
 function fixture(options) {
   const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() });
@@ -35,6 +35,40 @@ test("permission process keeps strict isolated client routing and only explicitl
   assert.equal(args[args.indexOf("--permission-mode") + 1], "default");
   assert.ok(!args.includes("--allowedTools") && !args.includes("--dangerously-skip-permissions"));
   assert.deepEqual(permissionArguments({ allowedTool: "Write" }).slice(-2), ["--allowedTools", "Write"]);
+});
+
+test("tool failure diagnostics retain only fixed error signatures and a leading exit code", () => {
+  const content = "Exit code 1\r\nC:\\private\\fixture.js\nSyntaxError: Invalid Unicode escape sequence\nsecret-token";
+  assert.deepEqual(summarizePermissionToolResult({ is_error: true, content }), {
+    isError: true, contentSupported: true, textBytes: Buffer.byteLength(content), exitCode: 1,
+    signatures: ["syntax_error", "invalid_unicode_escape"],
+  });
+  const output = JSON.stringify(summarizePermissionToolResult({ is_error: true, content,
+    command: "private command", toJSON() { throw new Error("Must not serialize native result"); } }));
+  for (const value of ["private", "fixture.js", "secret-token", "command"]) assert.ok(!output.includes(value));
+});
+
+test("tool failure diagnostics handle native text blocks without treating unknown values as success", () => {
+  assert.deepEqual(summarizePermissionToolResult({ content: [{ type: "text", text: "Exit code 127\nbash: node: command not found\n" }] }), {
+    isError: null, contentSupported: true, textBytes: 44, exitCode: 127, signatures: ["command_not_found"],
+  });
+  assert.deepEqual(summarizePermissionToolResult({ is_error: false, content: "unclassified failure" }), {
+    isError: false, contentSupported: true, textBytes: 20, exitCode: null, signatures: [],
+  });
+  for (const content of [undefined, null, {}, [{ type: "image", source: "private" }]]) {
+    assert.deepEqual(summarizePermissionToolResult({ content }), {
+      isError: null, contentSupported: false, textBytes: 0, exitCode: null, signatures: [],
+    });
+  }
+});
+
+test("tool failure diagnostics reject embedded, malformed and out-of-range exit codes", () => {
+  for (const content of ["private output\nExit code 1", "Exit code -1", "Exit code 256", "Exit code 1000",
+    "Exit code 01", "Exit code 1.5", "Exit code 1 private", "Exit code NaN"]) {
+    assert.equal(summarizePermissionToolResult({ content }).exitCode, null);
+  }
+  assert.equal(summarizePermissionToolResult({ content: "Exit code 0" }).exitCode, 0);
+  assert.equal(summarizePermissionToolResult({ content: "Exit code 255\n" }).exitCode, 255);
 });
 
 test("control protocol correlates requests and responses while preserving split UTF-8 events", async () => {
