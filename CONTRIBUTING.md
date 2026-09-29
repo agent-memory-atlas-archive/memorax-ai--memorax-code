@@ -322,7 +322,7 @@ script's prerequisites and isolation before using it; a macOS/Linux suite or
 WSL run does not replace native Windows validation.
 
 Live-provider, MemoraX-backed, and live Jev checks are explicit opt-in tests.
-The credential-free native Codex workflow below runs by default on PRs. Report
+The credential-free native Codex and OpenCode checks below run by default on PRs. Report
 native-client and synthetic evidence separately, record platform and scenarios,
 redact output, and explain any relevant checks not run. Public fixtures must never contain
 real API keys, private transcripts, personal memory, or infrastructure
@@ -330,7 +330,7 @@ credentials.
 
 ### Codex Functional CI
 
-The [Codex functional workflow](.github/workflows/macos-codex-install.yml)
+The [native client functional workflow](.github/workflows/macos-codex-install.yml)
 runs on pull requests, pushes to `main`, and manual dispatch. Reuse the basic
 `Tests` and `Documentation` jobs above; this workflow adds installed-package
 and native-client evidence. It does not copy the source regression suites.
@@ -514,6 +514,110 @@ This verifies the packaged integration and lifecycle, not real-client behavior.
 `make npm-publish-dry-run` and direct invocation of
 `scripts/npm-publish-dry-run.sh` both check release-version consistency before
 building or invoking npm's dry-run.
+
+### OpenCode Functional CI
+
+The same workflow has an independent OpenCode matrix and an `OpenCode functional
+result` check. It consumes the package job's exact tarball, without rebuilding
+per client or operating system. OpenCode 1.18.18 is the reproducible baseline;
+the workflow resolves npm's latest stable version once and tests that exact
+version without fallback. Both tracks run on Ubuntu, macOS, and Windows with
+Node.js 24; Ubuntu also checks the baseline with Node.js 20. Failed, cancelled,
+or skipped required jobs fail the result. The existing Codex result remains
+separate. Provider-only manual dispatch does not run either functional matrix.
+
+OpenCode follows the same acceptance goals as [Codex](#codex-functional-ci),
+using its own plugin, native SDK messages, tools, and permission protocol:
+
+| Shared acceptance goal | OpenCode evidence |
+| --- | --- |
+| Lifecycle and protected configuration | Real npm installation, terminal setup and cancellation, repeated setup, stop/start, uninstall/reinstall; preserve account, client choices, provider settings, and synthetic personal memory |
+| Upgrade and recovery | Published 0.1.18 to candidate through the public updater; controlled download and postinstall failures, Backend replacement, recovery and retry |
+| Setup interruption | After config publication, before Backend start, after Backend start, and cancellation at the replacement-key prompt; saved-account retry and Search |
+| Native memory flow | Real sessions and continuation, complete selected Unicode content, redaction, workspace isolation, installed CLI and scripted Skill Search/Add |
+| Permissions and interruption | Native approval requests, actual file effects, denied and interrupted turns, and pending requests; interrupted turns must not trigger automatic Add |
+| Background configuration | A real Repo Memory worker uses the configured global model/provider; a no-op model response must fail artifact validation |
+| Isolation and cleanup | Temporary client/Backend/user homes, allowlisted environment, synthetic credentials, local model and memory receivers, owned-process and port checks |
+
+The native checks use an explicitly configured synthetic OpenCode model, not a
+hosted model identifier. Ordinary conversation must not cause automatic Search.
+Positive Skill cases make the real client execute the installed `memorax-cli`
+and return its result to the model; the local model directs those tool calls.
+This validates integration, not autonomous Skill selection or model quality.
+SDK session/message identities are the content authority, not test-authored
+transcripts or plugin prompt text. Buffering and chunking are disabled for exact
+immediate writeback assertions, as in the Codex checks.
+
+Client-specific assertions cover OpenCode plugin/Skill discovery, preserved
+JSONC configuration, native message parent lineage, and shell environment
+session binding. The server suite verifies existing-server reuse, authenticated
+loopback fallback only on an initial transport failure, and no fallback after
+HTTP or native assistant errors. It verifies real tool effects, temporary
+session deletion, and owned server cleanup. The wrappers install test-only
+`node-pty@1.1.0` and `@vscode/ripgrep@1.18.0`; Skill discovery uses that explicit
+ripgrep executable instead of relying on an ambient installation or download.
+OpenCode permission decisions use its own completion and abort
+semantics. Codex Guardian auto-review, Codex sandbox modes, and plugin trust
+registration are not OpenCode acceptance cases. Neither client's default checks
+prove complete Repo Memory generation, temporary model/provider override
+inheritance, Desktop UI behavior, or live model quality. Report unsupported or
+unverified native features explicitly rather than treating them as passed.
+
+Late approval after cancellation is an optional diagnostic, not part of the
+default wrappers or required CI matrix. It checks whether an old permission
+reply can execute a tool after the native session reports interruption. This
+client-level expectation is separate from the required MemoraX contract:
+interrupted turns must not trigger automatic Add, and owned resources must be
+cleaned up. The default permission suite continues to enforce that contract.
+
+The diagnostic observed a file write after late approval on OpenCode 1.18.18
+and 1.18.33 with the installed plugin. It reports
+`LATE_PERMISSION_EXECUTED_ABORTED_TOOL` and exits nonzero; the result is not
+converted to a pass. This observation alone does not establish an upstream
+defect or a MemoraX regression: native cancellation semantics, a plugin-free
+control, and UI reachability require separate investigation. To run it with an
+installed package, OpenCode executable, and the wrapper's test dependencies:
+
+```bash
+node scripts/opencode-permissions-check.mjs PACKAGE_ROOT OPENCODE_EXECUTABLE --late-approval
+```
+
+For startup investigation, manual dispatch with
+`diagnose_opencode_initialization=true` runs only the package check and a
+Windows baseline diagnostic with a no-op plugin. After one separate online
+cache warmup, it compares the operating system and runner temporary locations
+at equal short and long path lengths, using four order-balanced rounds and
+npm offline mode. Every trial uses a fresh home and the same isolated cache;
+failed trials are not retried and the session request timeout is unchanged.
+Successful samples require completed dependency installation, not just a created
+session. Cleanup failure stops the experiment and retains isolated state.
+A loopback-only Bun inspector collects allowlisted npm phase timings and
+fixed-package HTTP milestones. Cache-stream creation is not proof of a completed
+cache read, and response-body completion may be delayed by extraction backpressure.
+Raw logs, paths, credentials, and inspector objects are not published. Diagnostic completion is not
+functional acceptance, and this mode does not run the required matrix or the
+paid provider check.
+
+On macOS or Linux, use `memorax_dev make test-opencode-e2e` to validate the
+package and run the baseline. To reuse an already validated package or select
+another exact client version:
+
+```bash
+bash scripts/opencode-install-check.sh dist/npm/tarballs 1.18.18 0.1.18
+```
+
+On native Windows, download the package artifact and use a disposable
+PowerShell 7 session with Node.js, npm, and Git for Windows available:
+
+```powershell
+./scripts/opencode-install-check.ps1 -TarballDirectory dist/npm/tarballs -OpenCodeVersion 1.18.18 -PreviousVersion 0.1.18
+```
+
+The Windows wrapper reuses the same exact-prefix user PATH cleanup guard as
+Codex, including its interruption and concurrent-update limitations. Local
+`node scripts/opencode-e2e.mjs [TARBALL_DIR] [OPENCODE_VERSION]` delegates to
+these platform wrappers; it no longer creates a separate candidate package or
+injects a prebuilt Repo Memory bundle.
 
 ## Pull Requests
 

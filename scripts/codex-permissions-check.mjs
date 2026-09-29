@@ -6,6 +6,7 @@ import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { createNativeHarness, fixtureKey, fixtureModel, fixtureReviewerModel, fixtureUser, sendResponses, waitFor } from "./codex-native-support.mjs";
 import { assertCompleteText, assertNoForeignContent, assertWritebackMessages, selectNativeTurnContent } from "./codex-native-content-check.mjs";
+import { collectWritebackDiagnostics } from "./codex-writeback-diagnostics.mjs";
 
 // Native app-server protocol, checked with baseline and latest Codex. The fixtures only
 // test approval routing and enforcement; they do not evaluate reviewer judgment.
@@ -35,6 +36,7 @@ async function main() {
 try {
   check(process.argv.length === 4, "EXPECTED_INSTALLED_PACKAGE_ROOT_AND_CODEX_CLI_PATH");
   harness = await createNativeHarness({ packageRoot: resolve(process.argv[2]), codexCommand: resolve(process.argv[3]), label: "permissions" });
+  harness.env.MEMORAX_CODE_BACKEND_DEBUG_REQUESTS = "true";
   stage = "installed plugin setup";
   await harness.setup();
   report.codexVersion = harness.codexVersion;
@@ -122,10 +124,12 @@ try {
     const expectedSandbox = test.sandbox === "danger-full-access" ? "dangerFullAccess" : "workspaceWrite";
     check(started.sandbox?.type === expectedSandbox, "EFFECTIVE_SANDBOX_MISMATCH");
     const threadId = started.thread.id;
+    current.threadId = threadId;
     const turn = await rpc.request("turn/start", {
       threadId, input: [{ type: "text", text: current.prompt, text_elements: [] }],
     });
     const turnId = turn.turn.id;
+    current.turnId = turnId;
     let approval;
     const caseEvents = () => rpc.events.slice(startIndex).filter((event) => event.params?.threadId === threadId
       && (event.params?.turnId ?? event.params?.turn?.id) === turnId);
@@ -212,6 +216,12 @@ try {
   report.receiverErrors = harness?.serverErrors ?? [];
   if (rpc) report.observedEventMethods = [...new Set(rpc.events.map((event) => event.method))];
   if (current) report.activeCaseCounts = { parentRequests: current.parentRequests, guardianRequests: current.guardianRequests };
+  if (harness && rpc && current) {
+    try {
+      report.writebackDiagnostics = await collectWritebackDiagnostics({ harness, events: rpc.events,
+        threadId: current.threadId, turnId: current.turnId });
+    } catch { report.writebackDiagnostics = { available: false }; }
+  }
 } finally {
   try {
     if (rpc) await rpc.close();

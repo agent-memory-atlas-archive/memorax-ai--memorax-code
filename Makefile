@@ -48,8 +48,7 @@ test-trae-adapter:
 test-cursor-adapter:
 	$(NPM) test --prefix packages/ts/memorax-code-cursor-adapter
 
-test-opencode-e2e:
-	$(NPM) ci --prefix packages/ts/memorax-code-backend
+test-opencode-e2e: npm-package-check
 	node scripts/opencode-e2e.mjs
 
 test-npm-package:
