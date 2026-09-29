@@ -8,6 +8,15 @@ export function permissionArguments({ allowedTool } = {}) {
     ...(allowedTool ? ["--allowedTools", allowedTool] : [])];
 }
 
+export function inflightScript({ startedPath, markerPath, marker }, platform = process.platform) {
+  // Keep Windows path separators out of JavaScript escapes in the Bash command.
+  if (platform === "win32") {
+    startedPath = startedPath.replaceAll("\\", "/");
+    markerPath = markerPath.replaceAll("\\", "/");
+  }
+  return `const fs=require("node:fs");fs.writeFileSync(${JSON.stringify(`${startedPath}.tmp`)},JSON.stringify({pid:process.pid,marker:${JSON.stringify(marker)}}));fs.renameSync(${JSON.stringify(`${startedPath}.tmp`)},${JSON.stringify(startedPath)});setTimeout(()=>fs.writeFileSync(${JSON.stringify(markerPath)},${JSON.stringify(marker)}),60000);`;
+}
+
 export function summarizePermissionToolResult(result) {
   const content = result?.content;
   const supported = typeof content === "string" || (Array.isArray(content)

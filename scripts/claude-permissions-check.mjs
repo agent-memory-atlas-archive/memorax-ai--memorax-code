@@ -7,7 +7,7 @@ import { isDeepStrictEqual } from "node:util";
 import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, waitFor } from "./claude-native-support.mjs";
 import { assertCompleteText, assertNoForeignContent, assertWritebackMessages } from "./codex-native-content-check.mjs";
 import { selectNativeMemoraxPlugin, selectNativeTurnContent } from "./claude-native-content-check.mjs";
-import { ClaudeControlSession, permissionArguments, selectInterruptedTurn, summarizePermissionToolResult, textContent } from "./claude-permissions-support.mjs";
+import { ClaudeControlSession, inflightScript, permissionArguments, selectInterruptedTurn, summarizePermissionToolResult, textContent } from "./claude-permissions-support.mjs";
 
 const cases = [
   { id: "policy-allow", preallowed: true, writes: true },
@@ -296,8 +296,7 @@ async function verifyCompleted({ prompt, answer, after = 0, tool, denied }) {
     completedHookCorrelationMatched: true, interruptedContentExcluded: true };
 }
 function inflightCommand(fixture) {
-  const script = `const fs=require("node:fs");fs.writeFileSync(${JSON.stringify(`${fixture.startedPath}.tmp`)},JSON.stringify({pid:process.pid,marker:${JSON.stringify(fixture.marker)}}));fs.renameSync(${JSON.stringify(`${fixture.startedPath}.tmp`)},${JSON.stringify(fixture.startedPath)});setTimeout(()=>fs.writeFileSync(${JSON.stringify(fixture.markerPath)},${JSON.stringify(fixture.marker)}),60000);`;
-  return [process.execPath.replaceAll("\\", "/"), "-e", script].map((value) => `'${value.replaceAll("'", "'\\''")}'`).join(" ");
+  return [process.execPath.replaceAll("\\", "/"), "-e", inflightScript(fixture)].map((value) => `'${value.replaceAll("'", "'\\''")}'`).join(" ");
 }
 async function exists(path) { try { await access(path); return true; } catch (error) { if (error.code === "ENOENT") return false; throw error; } }
 function alive(pid) { try { process.kill(pid, 0); return true; } catch (error) { if (error.code === "ESRCH") return false; if (error.code === "EPERM") return true; throw error; } }

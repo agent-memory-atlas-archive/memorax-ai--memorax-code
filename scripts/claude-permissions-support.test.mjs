@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import test from "node:test";
-import { ClaudeControlSession, permissionArguments, selectInterruptedTurn, summarizePermissionToolResult } from "./claude-permissions-support.mjs";
+import { runInNewContext } from "node:vm";
+import { ClaudeControlSession, inflightScript, permissionArguments, selectInterruptedTurn, summarizePermissionToolResult } from "./claude-permissions-support.mjs";
 
 function fixture(options) {
   const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() });
@@ -35,6 +36,33 @@ test("permission process keeps strict isolated client routing and only explicitl
   assert.equal(args[args.indexOf("--permission-mode") + 1], "default");
   assert.ok(!args.includes("--allowedTools") && !args.includes("--dangerously-skip-permissions"));
   assert.deepEqual(permissionArguments({ allowedTool: "Write" }).slice(-2), ["--allowedTools", "Write"]);
+});
+
+for (const [platform, root, expectedRoot] of [
+  ["win32", "C:\\ci\\fixture space '$`\\tick\\user-inflight", "C:/ci/fixture space '$`/tick/user-inflight"],
+  ["linux", String.raw`/tmp/fixture space '$\tick/user-inflight`, String.raw`/tmp/fixture space '$\tick/user-inflight`],
+  ["darwin", "/tmp/fixture space '$`tick/user-inflight", "/tmp/fixture space '$`tick/user-inflight"],
+]) test(`inflight script preserves fixture effects with portable ${platform} paths`, () => {
+  const marker = "fixture ' \" $ ` \\user\nmarker", pid = 123;
+  const writes = [], timers = [];
+  const script = inflightScript({ startedPath: `${root}-started.json`, markerPath: `${root}.txt`, marker }, platform);
+  runInNewContext(script, {
+    require(name) {
+      assert.equal(name, "node:fs");
+      return { writeFileSync: (...args) => writes.push(["write", ...args]), renameSync: (...args) => writes.push(["rename", ...args]) };
+    },
+    process: { pid },
+    setTimeout: (callback, ms) => timers.push({ callback, ms }),
+  }, { timeout: 1000 });
+  assert.deepEqual(writes, [
+    ["write", `${expectedRoot}-started.json.tmp`, JSON.stringify({ pid, marker })],
+    ["rename", `${expectedRoot}-started.json.tmp`, `${expectedRoot}-started.json`],
+  ]);
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].ms, 60_000);
+  timers[0].callback();
+  assert.deepEqual(writes[2], ["write", `${expectedRoot}.txt`, marker]);
+  assert.equal(writes.length, 3);
 });
 
 test("tool failure diagnostics retain only fixed error signatures and a leading exit code", () => {
