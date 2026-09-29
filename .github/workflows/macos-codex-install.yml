@@ -90,7 +90,7 @@ jobs:
               : `${include.length} required installation, native-flow and permission jobs; no version fallback.\n`));
           NODE
       - name: Verify test assertions reject malformed content and unexpected failures
-        run: node --test scripts/codex-native-content-check.test.mjs scripts/codex-lifecycle-assertions.test.mjs scripts/opencode-native-support.test.mjs scripts/opencode-initialization-diagnostic.test.mjs scripts/opencode-initialization-layouts.test.mjs
+        run: node --test scripts/codex-native-content-check.test.mjs scripts/codex-lifecycle-assertions.test.mjs scripts/codex-writeback-diagnostics.test.mjs scripts/opencode-native-support.test.mjs scripts/opencode-initialization-diagnostic.test.mjs scripts/opencode-initialization-layouts.test.mjs
       - name: Build and validate the installable package
         id: package-check
         shell: bash
