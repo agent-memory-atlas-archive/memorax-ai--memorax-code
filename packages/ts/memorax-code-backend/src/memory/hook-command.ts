@@ -25,7 +25,7 @@ const TURN_START_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> =
   workbuddy: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "transcriptPath"]),
   trae: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt"]),
   cursor: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "transcriptPath", "databasePath"]),
-  qoder: new Set(["version", "client", "sessionId", "cwd", "turnId", "prompt", "transcriptPath"]),
+  qoder: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "transcriptPath"]),
 };
 const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "lastAssistantMessage", "transcriptPath"]),
@@ -56,7 +56,7 @@ const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = 
   workbuddy: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath"]),
   trae: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "lastAssistantMessage", "assistantObservedAt"]),
   cursor: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "databasePath", "phase", "responseDigest", "status"]),
-  qoder: new Set(["version", "client", "sessionId", "cwd", "turnId", "transcriptPath", "status"]),
+  qoder: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "status"]),
 };
 const SKILL_REMINDER_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "content", "triggers"]),
@@ -67,7 +67,7 @@ const SKILL_REMINDER_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>
   workbuddy: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "content", "triggers"]),
   trae: new Set([...BASE_COMMAND_KEYS, "turnId", "content", "triggers"]),
   cursor: new Set([...BASE_COMMAND_KEYS, "turnId", "content", "triggers"]),
-  qoder: new Set(["version", "client", "sessionId", "cwd", "turnId", "transcriptPath", "content", "triggers"]),
+  qoder: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "content", "triggers"]),
 };
 const PRE_COMPACT_KEYS = {
   cursor: new Set([...BASE_COMMAND_KEYS, "turnId", "databasePath", "transcriptPath"]),
@@ -683,6 +683,7 @@ function qoderCommandIdentity(value: Record<string, unknown>, base: MemoryHookCo
   const cwd = base.cwd;
   const identity = /^[A-Za-z0-9._:-]{1,256}$/;
   if (!turnId || !identity.test(turnId) || !identity.test(base.sessionId)
+    || (base.workspaceKind !== undefined && base.workspaceKind !== "projectless")
     || !cwd || !isAbsolute(cwd) || cwd.includes("\0")
     || !transcriptPath || !isAbsolute(transcriptPath) || transcriptPath.includes("\0")) return undefined;
   return { turnId, transcriptPath, cwd };

@@ -58,6 +58,49 @@ test("unrecorded or rejected turns retain local guidance but do not request sear
   assert.deepEqual(f.requests.map((entry) => entry.path), ["/memory/turn-start"]);
 });
 
+test("managed default chat Hooks consistently carry projectless scope while ordinary paths cannot claim it", async (t) => {
+  const f = await fixture(t, { server: true });
+  const cwd = join(f.home, "Documents", "Qoder", "2026-10-06", "ab1234ef");
+  await mkdir(cwd, { recursive: true });
+  const input = hookInput(f, { cwd });
+  const result = await hook(f, input);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(f.requests.map((entry) => entry.path), [
+    "/memory/turn-start", "/memory/search-guidance", "/memory/skill-reminder",
+  ]);
+  for (const { body } of f.requests) {
+    assert.equal(body.workspaceKind, "projectless");
+    assert.equal(body.cwd, cwd);
+  }
+  await hook(f, { ...input, hook_event_name: "QueryEnd", reason: "end_turn" });
+  assert.equal(f.requests.at(-1).path, "/memory/writeback");
+  assert.equal(f.requests.at(-1).body.workspaceKind, "projectless");
+  assert.equal(f.requests.at(-1).body.cwd, cwd);
+
+  f.requests.length = 0;
+  await hook(f, hookInput(f, { session_id: "ordinary-session", workspaceKind: "projectless", workspace_kind: "projectless" }));
+  assert.equal(f.requests[0].path, "/memory/turn-start");
+  for (const { body } of f.requests) assert.equal(body.workspaceKind, undefined);
+});
+
+test("managed default chat notification candidates keep projectless scope through delayed registration", async (t) => {
+  const f = await fixture(t, { server: true });
+  const cwd = join(f.home, "Documents", "Qoder", "2026-10-06", "ab1234ef");
+  await mkdir(cwd, { recursive: true });
+  const input = hookInput(f, { cwd,
+    prompt: "<task-notification><task-id>synthetic-task</task-id><status>completed</status></task-notification>",
+  });
+  assert.equal((await hook(f, input)).stdout, "");
+  assert.deepEqual(f.requests, []);
+  await hook(f, { ...input, hook_event_name: "QueryEnd", reason: "end_turn" });
+  assert.deepEqual(f.requests.map((entry) => entry.path), ["/memory/turn-start", "/memory/writeback"]);
+  for (const { body } of f.requests) {
+    assert.equal(body.workspaceKind, "projectless");
+    assert.equal(body.cwd, cwd);
+  }
+  assert.equal(f.requests[0].body.prompt, input.prompt);
+});
+
 test("QueryEnd sends exact completion or abort identity and never sends Hook text as content", async (t) => {
   const f = await fixture(t, { server: true });
   for (const [reason, status] of [["end_turn", "completed"], ["abort", "aborted"]]) {

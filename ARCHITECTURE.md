@@ -587,10 +587,14 @@ Important distinctions:
   precedence. Recognition is client-owned; scope derivation stays shared.
   General sharing does not merge client/session identity or physical workspace
   keys. The [directory rules](docs/configuration.md#memory-scope) apply to Codex,
-  WorkBuddy, OpenCode, and Cursor; Cursor reports a no-folder conversation as
-  `workspaceKind: projectless` without a `cwd`, so no physical workspace root is
-  required. Cursor ingress rejects an identity containing both `cwd` and
-  `workspaceKind: projectless`. Ordinary workspaces retain their existing rules.
+  WorkBuddy, OpenCode, Cursor, and Qoder. Cursor reports a no-folder conversation
+  as `workspaceKind: projectless` without a `cwd`, so no physical workspace root
+  is required. Cursor ingress rejects an identity containing both `cwd` and
+  `workspaceKind: projectless`. Qoder still requires `cwd`; its Hook identifies
+  only the exact generated default task directory, and its Backend runtime
+  independently validates the convention and real-path containment before
+  accepting `projectless`. Qoder recognition does not depend on its SQLite
+  database. Ordinary workspaces retain their existing rules.
   Codex can recover an unbound session's General root from the matching
   rollout's first `session_meta` record when a new Turn resumes in a child
   directory. The native initial cwd must match the shared Codex default-directory

@@ -272,7 +272,7 @@ Setup、主动 Search/Add、Backend 启动/停止/重启、客户端部署或包
 `memorax-code status` 会汇总近期故障；使用 `memorax-code logs --diagnostics` 或
 `memorax-code logs --id <diagnostic-id>` 查看详情，检查后即可用于问题反馈。
 
-Coding Memory 按仓库或工作区确定范围。Codex、WorkBuddy、OpenCode 和 Cursor 中符合识别规则的
+Coding Memory 按仓库或工作区确定范围。Codex、WorkBuddy、OpenCode、Cursor 和 Qoder 中符合识别规则的
 默认聊天目录或上下文，会在相同的 MemoraX 用户 ID 配置下共享 `General`。Cursor 未选择文件夹的对话使用
 这个共享的 `@General` 范围；打开仓库后则使用该仓库的正常范围。已有记忆不会自动迁移，目录规则详见
 [记忆范围](docs/configuration.md#memory-scope)。

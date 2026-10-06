@@ -640,9 +640,20 @@ UserPromptSubmit can register the next turn. Backend availability is checked at
 SessionStart, not on every prompt, so a Backend that stops during an active task
 must be restarted before writeback can resume.
 
-Qoder requires a native workspace path; it has no verified projectless scope
-authority. Each live Backend session retains up to 4,096 distinct request-set
-IDs to reject late replay of completed, aborted, or superseded submissions.
+Qoder requires a native workspace path, including for default chats. The current
+Desktop default is `~/Documents/Qoder/<YYYY-MM-DD>/<session-key>`. The session
+key is the first eight characters of a safe native session ID (the entire ID
+if shorter), or Qoder's eight-character hash fallback. Only the exact generated
+task directory is recognized; arbitrary descendants are not. The Hook marks a
+matching directory as `projectless`, and the Backend independently validates
+the directory convention and real-path containment. A verified Git repository
+still takes precedence; an eligible non-Git default chat uses
+`<base-user-id>@General`. Other non-Git directories retain their ordinary folder
+namespace. Recognition does not read Qoder's SQLite database or move native
+chat files. See [memory scope](#memory-scope).
+
+Each live Backend session retains up to 4,096 distinct request-set IDs to reject
+late replay of completed, aborted, or superseded submissions.
 After that limit, new submissions fail with `session_turn_history_full`; the
 current accepted turn can still complete. Start a new Qoder task to continue.
 
@@ -692,6 +703,7 @@ workspaces. Recognized default chat directories instead share
 | WorkBuddy | A valid `YYYY-MM-DD-HH-mm-ss` direct child of `~/WorkBuddy`, or of WorkBuddy's configured `defaultWorkspacePath`. |
 | OpenCode | The exact `Default Project` directory under the system Documents directory, including supported Documents redirection. |
 | Cursor | A conversation with no selected workspace or folder (`workspace_roots: []`); no physical directory is required. |
+| Qoder | The exact generated `~/Documents/Qoder/<YYYY-MM-DD>/<session-key>` task directory, with a valid date and native session key; real-path containment is required. |
 
 A verified Git repository takes precedence over default-directory detection.
 Other selected directories retain the ordinary repository or folder rules;
@@ -708,8 +720,9 @@ identity and physical workspace identity remain separate even when remote
 memory is shared. Resolution never falls back to the bare base user ID.
 
 The change applies to subsequent writes and queries. Existing memories under
-`Codex-General`, WorkBuddy date-directory names, or OpenCode's `Default-Project`
-name are not migrated, and Search does not also query those previous names.
+`Codex-General`, WorkBuddy date-directory names, OpenCode's `Default-Project`,
+or Qoder task-directory names are not migrated, and Search does not also query
+those previous names.
 
 ## Jev provider configuration
 

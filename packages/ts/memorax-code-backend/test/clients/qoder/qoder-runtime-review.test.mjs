@@ -66,14 +66,14 @@ for (const outcome of ["aborted", "superseded"]) {
 test("Qoder ingress rejects a projectless scope hint that has no native authority", async (t) => {
   const f = await fixture(t);
   const parsed = parseTurnStartCommand({ ...f.first, workspaceKind: "projectless" });
-  if (parsed.ok) {
-    await f.runtime.recordTurnStart(parsed.command);
-    await f.writeNative();
-    await f.runtime.writeback({ ...f.finish(f.first), workspaceKind: "projectless" });
-  }
-  assert.deepEqual({ accepted: parsed.ok, scopeKind: f.writes[0]?.repositoryScope.scopeKind }, {
-    accepted: false, scopeKind: undefined,
+  assert.equal(parsed.ok, true);
+  assert.deepEqual(await f.runtime.recordTurnStart(parsed.command), {
+    ok: true, recorded: false, reason: "workspace_scope_mismatch",
   });
+  await f.writeNative();
+  assert.equal((await f.runtime.writeback({ ...f.finish(f.first), workspaceKind: "projectless" })).scheduled, false);
+  assert.equal(f.runtime.size(), 0);
+  assert.equal(f.writes.length, 0);
 });
 
 async function fixture(t) {

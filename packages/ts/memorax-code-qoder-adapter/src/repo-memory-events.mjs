@@ -53,7 +53,8 @@ export function consumeQoderNotification(command, options = {}) {
     const index = records.findIndex((record) => record.key === recordKey(command));
     if (index < 0) return undefined;
     const start = records[index].command;
-    if (start.cwd !== command.cwd || start.transcriptPath !== command.transcriptPath) return undefined;
+    if (start.cwd !== command.cwd || start.transcriptPath !== command.transcriptPath
+      || start.workspaceKind !== command.workspaceKind) return undefined;
     records.splice(index, 1);
     return start;
   });
@@ -99,14 +100,16 @@ function readRecords(path) {
 function startCommand(command) {
   if (!commandIdentity(command) || typeof command.prompt !== "string" || !command.prompt.trim()) return undefined;
   return { version: 1, client: "qoder", sessionId: command.sessionId, turnId: command.turnId,
-    cwd: command.cwd, transcriptPath: command.transcriptPath, prompt: command.prompt };
+    cwd: command.cwd, transcriptPath: command.transcriptPath, prompt: command.prompt,
+    ...(command.workspaceKind === "projectless" ? { workspaceKind: "projectless" } : {}),
+  };
 }
 
 function commandIdentity(command) {
   return command?.version === 1 && command.client === "qoder"
     && identity(command.sessionId) && identity(command.turnId)
     && absolutePath(command.cwd) && absolutePath(command.transcriptPath)
-    && command.workspaceKind === undefined;
+    && (command.workspaceKind === undefined || command.workspaceKind === "projectless");
 }
 
 function recordKey(command) {

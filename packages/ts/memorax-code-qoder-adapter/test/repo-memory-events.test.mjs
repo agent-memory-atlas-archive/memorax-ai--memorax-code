@@ -63,6 +63,20 @@ test("duplicate submits are idempotent and conflicting observations cannot repla
   assert.deepEqual(consumeQoderNotification(f.start, f.options), f.start);
 });
 
+test("deferred projectless prompts retain their workspace kind and reject changed scope", async (t) => {
+  const f = await fixture(t);
+  const start = { ...f.start, workspaceKind: "projectless" };
+  assert.equal(deferQoderNotification(start, f.options), true);
+  assert.equal(deferQoderNotification(start, f.options), true);
+  assert.throws(() => deferQoderNotification(f.start, f.options), /invalid or full/);
+  for (const workspaceKind of [undefined, null, "general", "project"])
+    assert.equal(consumeQoderNotification({ ...start, workspaceKind }, f.options), undefined);
+  assert.deepEqual(consumeQoderNotification(start, f.options), start);
+  for (const workspaceKind of [null, "general", "project", " projectless "])
+    assert.throws(() => deferQoderNotification({ ...start, workspaceKind }, f.options), /invalid or full/);
+  assert.equal(existsSync(f.path), false);
+});
+
 test("concurrent processes preserve separate sessions and equal request IDs", async (t) => {
   const f = await fixture(t);
   const moduleUrl = new URL("../src/repo-memory-events.mjs", import.meta.url).href;

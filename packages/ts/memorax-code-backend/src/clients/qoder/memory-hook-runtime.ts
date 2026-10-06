@@ -1,4 +1,5 @@
 import { realpath } from "node:fs/promises";
+import { isQoderManagedTaskWorkspace } from "../../../../memorax-code-adapter-common/src/default-workspace.mjs";
 import { createHarnessMemoryRuntime, type HarnessMemoryRuntimeOptions } from "../../memory/harness-runtime.js";
 import type { MemoryHookTurnStartResult, QoderTurnStartCommand, QoderWritebackCommand } from "../../memory/hook-command.js";
 import type { MemoryTurnState } from "../../memory/turn-coordinator.js";
@@ -30,6 +31,11 @@ export function createQoderMemoryHookRuntime(options: HarnessMemoryRuntimeOption
   const operations = new Map<string, Promise<unknown>>();
   const limit = Number.isInteger(options.maxEntries) && options.maxEntries! > 0 ? options.maxEntries! : 256;
   let closed = false;
+
+  function validWorkspaceHint(command: QoderTurnStartCommand | QoderWritebackCommand): boolean {
+    return command.workspaceKind === undefined || (command.workspaceKind === "projectless"
+      && isQoderManagedTaskWorkspace(command.cwd, { env: options.env }));
+  }
 
   function serial<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
     const previous = operations.get(sessionId) ?? Promise.resolve();
@@ -69,6 +75,7 @@ export function createQoderMemoryHookRuntime(options: HarnessMemoryRuntimeOption
     recordTurnStart(command: QoderTurnStartCommand): Promise<MemoryHookTurnStartResult & { recorded: boolean; reason?: string }> {
       return serial(command.sessionId, async () => {
         if (closed) return { ok: true, recorded: false, reason: "runtime_closed" };
+        if (!validWorkspaceHint(command)) return { ok: true, recorded: false, reason: "workspace_scope_mismatch" };
         // Native background notifications also emit UserPromptSubmit, before
         // their origin is persisted. A matching envelope only delays handling;
         // a real human may paste it and must remain eligible after completion.
@@ -129,6 +136,7 @@ export function createQoderMemoryHookRuntime(options: HarnessMemoryRuntimeOption
     writeback(command: QoderWritebackCommand): Promise<QoderMemoryHookWritebackResult> {
       return serial(command.sessionId, async () => {
         if (closed) return skipped(command, "runtime_closed");
+        if (!validWorkspaceHint(command)) return skipped(command, "workspace_scope_mismatch");
         const turn = sessions.get(command.sessionId)?.current;
         // Native content cannot restore the scope binding of a missing start.
         // A new Submit registers the next turn after a Backend restart.
@@ -152,6 +160,7 @@ export function createQoderMemoryHookRuntime(options: HarnessMemoryRuntimeOption
           if (nativeRoot !== startRoot) return skipped(command, "workspace_scope_mismatch");
         } catch { return skipped(command, "workspace_scope_unavailable"); }
         if (closed) return skipped(command, "runtime_closed");
+        if (!validWorkspaceHint(turn.command)) return skipped(command, "workspace_scope_mismatch");
         const result = await memory.completeTurn({
           sessionId: command.sessionId, clientTurnId: command.turnId, metadata: turn.metadata,
           userText: native.turn.userPrompt, assistantText: native.turn.assistantReply,

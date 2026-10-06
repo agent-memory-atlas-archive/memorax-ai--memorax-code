@@ -13,6 +13,7 @@ const runtimeRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const commonRoot = join(runtimeRoot, "memorax-code-adapter-common", "src");
 const common = (path) => import(pathToFileURL(join(commonRoot, path)).href);
 const { readStdinJson, injectClientHookInput, readJsonFile } = await common("config-utils.mjs");
+const { isQoderManagedTaskWorkspace } = await common("default-workspace.mjs");
 const { isRepoMemoryJobWorker } = await common("repo-memory/repo-memory-job-context.mjs");
 const { sharedRepoMemoryPath } = await common("repo-memory/repo-memory-shared-bundle.mjs");
 const { resolveBackendConnection } = await common("backend-connection.mjs");
@@ -85,7 +86,9 @@ async function run() {
     return;
   }
 
-  const command = { version: 1, client: "qoder", sessionId, turnId, transcriptPath, cwd };
+  const command = { version: 1, client: "qoder", sessionId, turnId, transcriptPath, cwd,
+    ...(isQoderManagedTaskWorkspace(cwd) ? { workspaceKind: "projectless" } : {}),
+  };
   if (event === "QueryEnd") {
     const status = input.reason === "end_turn" ? "completed" : input.reason === "abort" ? "aborted" : undefined;
     if (!status) return;
