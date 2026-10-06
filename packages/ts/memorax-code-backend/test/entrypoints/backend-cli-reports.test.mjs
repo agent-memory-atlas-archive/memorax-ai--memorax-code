@@ -88,6 +88,7 @@ for (const { key, name, label } of [
   { key: "workbuddyAdapter", name: "WorkBuddy", label: "WorkBuddy" },
   { key: "traeAdapter", name: "Trae", label: "Trae" },
   { key: "cursorAdapter", name: "Cursor", label: "Cursor" },
+  { key: "qoderAdapter", name: "Qoder", label: "Qoder" },
 ]) {
   test(`${name}-only lifecycle guidance describes the changed integration`, (t) => {
     const started = captureReport(t, printLifecycleResult, {

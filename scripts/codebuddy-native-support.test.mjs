@@ -438,7 +438,7 @@ test("CodeBuddy harness replaces inherited credentials, all client homes and net
     "CODEBUDDY_BASE_URL", "CODEBUDDY_MODEL", "CODEBUDDY_HOME", "CODEBUDDY_CONFIG_DIR", "CODEBUDDY_PLUGIN_DIRS",
     "CODEBUDDY_ENV_FILE", "CODEBUDDY_CUSTOM_HEADERS", "WORKBUDDY_HOME", "WORKBUDDY_CONFIG_DIR", "CODEX_HOME",
     "CLAUDE_CONFIG_DIR", "CLAUDE_HOME", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY",
-    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "DSH_HOME", "OPENCODE_CONFIG_DIR", "TRAE_HOME", "TRAE_CN_HOME", "CURSOR_HOME",
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "DSH_HOME", "OPENCODE_CONFIG_DIR", "TRAE_HOME", "TRAE_CN_HOME", "CURSOR_HOME", "QODER_CONFIG_DIR",
     "MEMORAX_CODE_HOME", "MEMORAX_CODE_BACKEND_URL", "MEMORAX_CODE_BACKEND_TOKEN", "MEMORAX_CODE_CODEBUDDY_COMMAND",
     "MEMORAX_CODE_MEMORAX_ENDPOINT", "MEMORAX_CODE_MEMORAX_API_KEY", "MEMORAX_CODE_MEMORAX_USER_ID", "MEMORAX_CODE_WORKBUDDY_COMMAND",
     "NODE_OPTIONS", "NODE_EXTRA_CA_CERTS", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "OTEL_EXPORTER_OTLP_ENDPOINT",
@@ -465,7 +465,7 @@ test("CodeBuddy harness replaces inherited credentials, all client homes and net
   }
   for (const name of ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "CODEBUDDY_HOME", "CODEBUDDY_CONFIG_DIR",
     "WORKBUDDY_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_HOME", "CODEX_HOME", "DSH_HOME", "OPENCODE_CONFIG_DIR",
-    "TRAE_HOME", "TRAE_CN_HOME", "CURSOR_HOME", "MEMORAX_CODE_HOME", "TMP", "TEMP", "TMPDIR"]) {
+    "TRAE_HOME", "TRAE_CN_HOME", "CURSOR_HOME", "QODER_CONFIG_DIR", "MEMORAX_CODE_HOME", "TMP", "TEMP", "TMPDIR"]) {
     assert.equal(harness.env[name].startsWith(`${harness.root}/`) || harness.env[name].startsWith(`${harness.root}\\`), true, name);
   }
   assert.equal(harness.env.CODEBUDDY_API_KEY, "native-model-fixture");
@@ -495,7 +495,7 @@ test("CodeBuddy harness replaces inherited credentials, all client homes and net
   assert.deepEqual(Object.values(models.models[0].relatedModels), Array(5).fill(fixtureModel));
   const config = await readFile(join(harness.stateHome, "config.toml"), "utf8");
   assert.match(config, /\[clients\]\ncodebuddy = true\n/);
-  for (const client of ["codex", "claude", "dsh", "opencode", "workbuddy", "trae", "cursor"]) {
+  for (const client of ["codex", "claude", "dsh", "opencode", "workbuddy", "trae", "cursor", "qoder"]) {
     assert.equal(config.includes(`${client} = false\n`), true);
     assert.equal(harness.env[`MEMORAX_CODE_${client.toUpperCase()}_COMMAND`], join(harness.root, "unused-client"));
   }
@@ -537,7 +537,7 @@ test("WorkBuddy harness isolates native aliases and selects only its own runtime
   assert.equal(harness.env.MEMORAX_CODE_SKIP_WORKBUDDY_ADAPTER_INSTALL, undefined);
   const config = await readFile(join(harness.stateHome, "config.toml"), "utf8");
   assert.match(config, /\[clients\]\nworkbuddy = true\n/);
-  for (const client of ["codex", "claude", "dsh", "opencode", "codebuddy", "trae", "cursor"]) {
+  for (const client of ["codex", "claude", "dsh", "opencode", "codebuddy", "trae", "cursor", "qoder"]) {
     assert.equal(config.includes(`${client} = false\n`), true);
     assert.equal(harness.env[`MEMORAX_CODE_${client.toUpperCase()}_COMMAND`], join(harness.root, "unused-client"));
     assert.equal(harness.env[`MEMORAX_CODE_${client.toUpperCase()}_TRACE_ENABLED`], "false");

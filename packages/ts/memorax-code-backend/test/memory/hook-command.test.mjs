@@ -46,6 +46,22 @@ test("Cursor pre-compact accepts only native identity and absolute local paths",
 });
 
 const invalidFields = {
+  qoder: {
+    start: [
+      ["missing turn", { turnId: undefined }],
+      ["missing native path", { transcriptPath: undefined }],
+      ["relative native path", { transcriptPath: "native.jsonl" }],
+      ["missing workspace", { cwd: undefined }],
+      ["foreign prompt identity", { promptId: "foreign" }],
+    ],
+    writeback: [
+      ["missing turn", { turnId: undefined }],
+      ["missing completion", { status: undefined }],
+      ["unknown completion", { status: "success" }],
+      ["Hook text is not authority", { lastAssistantMessage: "fallback" }],
+      ["NUL path", { transcriptPath: "/native\0.jsonl" }],
+    ],
+  },
   cursor: {
     start: [
       ["missing database authority", { databasePath: undefined }],

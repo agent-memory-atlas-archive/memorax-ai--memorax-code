@@ -17,7 +17,7 @@ import { classifyLifecycleRequest } from "./claude-lifecycle-assertions.mjs";
 const pluginName = "memorax-code-codebuddy-adapter";
 const client = process.argv[10] ?? "codebuddy";
 const clientName = client === "workbuddy" ? "WorkBuddy" : "CodeBuddy";
-const otherClients = ["codex", "claude", "opencode", "dsh", "codebuddy", "workbuddy", "trae", "cursor"]
+const otherClients = ["codex", "claude", "opencode", "dsh", "codebuddy", "workbuddy", "trae", "cursor", "qoder"]
   .filter((name) => name !== client);
 const fixtureKey = `sk_${"E".repeat(43)}`;
 const fixtureUser = "lifecycle-saved-account";
@@ -821,6 +821,7 @@ function isolatedEnv(userHome, codebuddyCommand) {
     CLAUDE_HOME: join(userHome, ".claude"), CLAUDE_CONFIG_DIR: join(userHome, ".claude"),
     WORKBUDDY_HOME: join(userHome, ".workbuddy"),
     TRAE_CN_HOME: join(userHome, ".trae-cn"), TRAE_HOME: join(userHome, ".trae-cn"), CURSOR_HOME: join(userHome, ".cursor"),
+    QODER_CONFIG_DIR: join(userHome, ".qoder"),
     [`MEMORAX_CODE_${client.toUpperCase()}_TRACE_ENABLED`]: "false",
   };
   if (client === "workbuddy") isolated.WORKBUDDY_CONFIG_DIR = codebuddyHome;

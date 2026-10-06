@@ -41,7 +41,7 @@ starts without the architecture, failed attempts, repository rules, or working
 preferences established before it.
 
 MemoraX Code gives Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness,
-OpenCode, Trae, and Cursor a shared memory layer for that context.
+OpenCode, Trae, Cursor, and Qoder a shared memory layer for that context.
 It can recall prior engineering knowledge, capture reusable lessons from
 completed work, maintain repository knowledge, and carry your procedures and
 preferences into future sessions.
@@ -53,7 +53,7 @@ and validation sooner.
 ## Quick Start
 
 Prepare Node.js 20+ (Node.js 24 LTS recommended) and at least one of Codex,
-Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, or Cursor.
+Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, Cursor, or Qoder.
 
 For DeepSeek Harness (DSH), current releases require Node.js
 `^22.19.0 || >=24.0.0`. Install or initialize DSH first, create at least one
@@ -157,6 +157,15 @@ refresh every detected coding agent after setup.
 | OpenCode | Restart or refresh the client to discover the managed plugin and Skill. |
 | Trae | In **Settings → Hooks → Global → Configured Hooks**, enable the registered Global Hooks once. Setup installs the Hooks and Skill; this switch requires manual activation. |
 | Cursor | Restart or refresh Cursor, then open a new conversation to load its native user Hooks, shared Skill, and managed background subagent. |
+| Qoder | Restart Qoder and start a new task to load the managed user Hooks, shared Skill, and background subagent. |
+
+Qoder uses `~/.qoder/settings.json` and `~/.qoder/skills/memorax-code/`;
+`QODER_CONFIG_DIR` overrides the root. The tested target is Qoder Desktop 0.4.3
+with runtime 1.1.64. Skill Search and manual Add use the shared CLI; automatic
+Add reads the exact completed turn from the native transcript. Repo Memory builds
+and maintenance use Qoder's native background subagent, with normal tool
+permissions and no separate Qoder CLI installation or login. See
+[Qoder configuration](docs/configuration.md#qoder-integration-paths).
 
 Cursor installs independently of Claude Code under `~/.cursor/hooks.json` and
 `~/.cursor/skills/memorax-code/`; setup preserves its third-party integration
@@ -213,7 +222,7 @@ to bootstrap setup or repair a stale terminal environment.
 ### Try Cross-Session Memory
 
 Clone the example repository from the product website, then open Codex, Claude
-Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, or Cursor in the project directory:
+Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, Cursor, or Qoder in the project directory:
 
 ```bash
 git clone https://github.com/SWE-agent/test-repo.git
@@ -221,7 +230,7 @@ cd test-repo
 ```
 
 Invoke the Skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code
-or DeepSeek Harness. In OpenCode, CodeBuddy CLI, WorkBuddy, Trae, or Cursor, ask the agent
+or DeepSeek Harness. In OpenCode, CodeBuddy CLI, WorkBuddy, Trae, Cursor, or Qoder, ask the agent
 to use the `memorax-code` skill by name. The prompts below use its product name
 and work in all supported clients.
 
@@ -285,10 +294,10 @@ unclear.
 | **Background memory writeback** | Extracts reusable knowledge from completed turns and writes it to Coding Memory in the background. |
 | **Preference continuity** | Records User Profile preferences and injects them into future tasks on a configured cadence. |
 | **Procedure reuse** | Records reusable task procedures and reminds future agents to apply them. |
-| **Visible memory impact** | In Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, and Cursor, opens the final answer with a brief natural-language note when an explicit Coding Memory Search or a Repo, Procedure, or Profile Memory available to the current turn materially guided the task. |
-| **Background Repo Memory maintenance** | Maintains one shared baseline from the locally known default branch. Any worktree can trigger a build or policy-driven update; all branches reuse the map and verify current source without per-worktree builds. Existing local bundles are preserved. Trae remains Skill-only; Cursor uses its native background subagent. |
+| **Visible memory impact** | In Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, Cursor, and Qoder, opens the final answer with a brief natural-language note when an explicit Coding Memory Search or a Repo, Procedure, or Profile Memory available to the current turn materially guided the task. |
+| **Background Repo Memory maintenance** | Maintains one shared baseline from the locally known default branch. Any worktree can trigger a build or policy-driven update; all branches reuse the map and verify current source without per-worktree builds. Existing local bundles are preserved. Trae remains Skill-only; Cursor and Qoder use their native background subagents. |
 | **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill or the CLI. |
-| **Client integration** | Integrates with Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, and Cursor for Skill-driven Search, local reminders, and automatic writeback. Automatic quota reminders are currently available in Codex, Claude Code, CodeBuddy CLI, WorkBuddy, OpenCode, and Trae. |
+| **Client integration** | Integrates with Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, Cursor, and Qoder for Skill-driven Search, local reminders, and automatic writeback. Automatic quota reminders are currently available in Codex, Claude Code, CodeBuddy CLI, WorkBuddy, OpenCode, and Trae. |
 | **Local observability** | Uses content-controlled local trace and reconciliation records to inspect activity counts, retrieval, and writeback status. |
 
 ## Your Memory, Your Control
