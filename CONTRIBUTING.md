@@ -1315,13 +1315,20 @@ blocks and their first filtering reason: JSON parsing, event, session or generat
 mismatch. A zero block count does not prove that a Hook never executed; incomplete
 or unrecognized log frames are outside this projection.
 
-Linux waits for native user Hook configuration to load for the current App
-launch before opening a new session, then requires a successful marker-owned
+Repo Memory delegation reads the same five context sources from the current
+request only; it never reuses a ticket from history. Duplicate delegations must
+agree. Failures retain the first rejected parent request for Hook and Backend
+diagnostics, plus a fixed rejection reason and bounded per-source presence and
+marker counts. Delegation prompts, invocations and capabilities stay private.
+
+Linux and macOS wait for native user Hook configuration to load for the current App
+launch before opening a new session, then require a successful marker-owned
 `sessionStart` for that session before its first submission. These bounded
 checks diagnose missing startup prerequisites; they do not make Cursor
 configuration reload and prompt submission atomic. Reports retain bounded
-relative Hook timing and Windows process-audit summaries on success and failure,
-so passing cells can serve as controls. Native requests and Backend registration
+relative Hook timing, including the first Repo Memory submission attempt, and
+Windows process-audit summaries on success and failure, so passing cells can
+serve as controls. Native requests and Backend registration
 remain independently observed; the fixture never supplies a missing Turn start.
 
 Real login, hosted models, OS credential-store isolation, native Continue/Retry/
