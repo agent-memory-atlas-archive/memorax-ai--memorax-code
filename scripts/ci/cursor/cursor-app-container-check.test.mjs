@@ -250,12 +250,14 @@ test("container staging preserves Cursor and Codex relative imports without copy
   await stageCursorAppChecks(root);
   assert.deepEqual((await readdir(root)).sort(), ["codex", "cursor"]);
   assert.deepEqual(await readdir(join(root, "codex")), ["codex-native-content-check.mjs"]);
-  assert.equal((await readdir(join(root, "cursor"))).length, 8);
+  assert.equal((await readdir(join(root, "cursor"))).length, 9);
   const staged = await import(pathToFileURL(join(root, "cursor", "cursor-app-memory-check.mjs")));
   assert.equal(typeof staged.assertCursorAppSkillReference, "function");
   assert.equal(typeof staged.assertCursorAppMemoryOperation, "function");
   const diagnostics = await import(pathToFileURL(join(root, "cursor", "cursor-app-hook-diagnostics.mjs")));
   assert.equal(typeof diagnostics.collectCursorAppHookDiagnostics, "function");
+  const hookContext = await import(pathToFileURL(join(root, "cursor", "cursor-app-hook-context.mjs")));
+  assert.equal(typeof hookContext.collectCursorAppSkillHookContext, "function");
 });
 
 test("seccomp is the pinned Playwright profile with only the documented chroot allowance", async () => {
@@ -325,7 +327,13 @@ test("public reports drop raw data and project failure diagnostics without weake
       ] } };
     input.appLaunch = { spawned: true, exitCode: 1, signal: "private-canary", log: "private-canary",
       markers: { permissionDenied: true } };
-    input.nativeHooks = { readStatus: "present", filesRead: 1, raw: "private-canary", executions: [] };
+    input.nativeHooks = { readStatus: "present", filesRead: 1, raw: "private-canary", executions: [],
+      ownedExecutionBlocks: { beforeSubmitPrompt: 2, private: "private-canary" },
+      filteredExecutionBlocks: { beforeSubmitPrompt: { parse: 1, event: 9000, session: -1, generation: "private-canary", raw: "private-canary" } } };
+    input.skillHookContext = { matched: "private-canary", raw: "private-canary",
+      current: { initial: { present: true, matched: true, content: "private-canary" },
+        exec: { present: "private-canary", matched: true } },
+      history: { user: { present: true, matched: false, sessionId: "private-canary" } } };
     input.backendDiagnostics = { readStatus: "present", records: [
       { operation: "memory.turn-start", reason: "turn_state_unavailable", errorCode: "CURSOR_TURN_STATE_UNAVAILABLE",
         systemCode: "EACCES", error: "private-canary", sessionHash: "private-canary" },
@@ -342,6 +350,12 @@ test("public reports drop raw data and project failure diagnostics without weake
     assert.equal(report.appLaunch.exitCode, 1);
     assert.equal(report.appLaunch.signal, "other");
     assert.equal(report.nativeHooks.readStatus, "present");
+    assert.equal(report.nativeHooks.ownedExecutionBlocks.beforeSubmitPrompt, 2);
+    assert.deepEqual(report.nativeHooks.filteredExecutionBlocks.beforeSubmitPrompt, { parse: 1, event: 0, session: 0, generation: 0 });
+    assert.equal(report.skillHookContext.matched, true);
+    assert.deepEqual(report.skillHookContext.current.initial, { present: true, matched: true });
+    assert.deepEqual(report.skillHookContext.current.exec, { present: false, matched: false });
+    assert.deepEqual(report.skillHookContext.history.user, { present: true, matched: false });
     assert.equal(report.backendDiagnostics.records[0].errorCode, "CURSOR_TURN_STATE_UNAVAILABLE");
     assert.equal(report.candidateStop.timedOut, true);
     assert.deepEqual(report.shellResult, { rejectionKind: 2, approvalClicked: true, exitCode: 127 });
@@ -351,7 +365,7 @@ test("public reports drop raw data and project failure diagnostics without weake
     assert.throws(() => project(input), /CURSOR_CONTAINER_REPORT/);
     delete input.errorCode;
     input.stage = "complete";
-    for (const key of ["candidateStop", "shellResult", "windowsAppStop", "nativeHooks", "backendDiagnostics"]) assert.equal(project(input)[key], undefined);
+    for (const key of ["candidateStop", "shellResult", "windowsAppStop", "nativeHooks", "skillHookContext", "backendDiagnostics"]) assert.equal(project(input)[key], undefined);
   }
 });
 

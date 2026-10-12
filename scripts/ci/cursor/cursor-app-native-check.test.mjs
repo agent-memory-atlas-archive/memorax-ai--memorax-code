@@ -7,6 +7,7 @@ import { PassThrough } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { collectCursorAppBackendDiagnostics, collectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { collectCursorAppSkillHookContext } from "./cursor-app-hook-context.mjs";
 
 const source = (await readFile(new URL("./cursor-app-native-check.mjs", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
 const privateCanary = "private-content-path-token-canary";
@@ -14,7 +15,7 @@ function check(value, code) { if (!value) throw Object.assign(new Error(code), {
 function nativeFunction(name, context = {}) {
   const definition = source.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?(?=\\n(?:async )?function )`))?.[0];
   assert.ok(definition, name);
-  return runInNewContext(`(${definition})`, { check, Buffer, basename, dirname, join, once, ...context }, { timeout: 100 });
+  return runInNewContext(`(${definition})`, { check, Buffer, basename, dirname, join, once, collectCursorAppSkillHookContext, ...context }, { timeout: 100 });
 }
 function childProcess() {
   return Object.assign(new EventEmitter(), { pid: 201, exitCode: null, signalCode: null,
@@ -104,9 +105,12 @@ test("failure collection reads existing diagnostics without replacing the origin
   assert.ok(body);
   const run = { conversationId: "11111111-1111-1111-1111-111111111111", requestId: "22222222-2222-2222-2222-222222222222" };
   const identity = { sessionId: run.conversationId, turnId: run.requestId };
-  for (const failed of [false, true]) {
-    const report = { errorCode: "CURSOR_APP_ADD_TIMEOUT" };
+  for (const failed of [false, true]) for (const saved of [false, true]) {
+    const snapshot = saved ? collectCursorAppSkillHookContext({ run: { ...run,
+      inputRequestContext: { hooksAdditionalContext: privateCanary } } }) : undefined;
+    const report = { errorCode: "CURSOR_APP_ADD_TIMEOUT", ...(snapshot ? { skillHookContext: snapshot } : {}) };
     await runInNewContext(`(async () => {${body}})()`, { run, report,
+      agent: { runs: [run] }, collectCursorAppSkillHookContext,
       env: { MEMORAX_CODE_HOME: "/owned/state" }, userData: "/owned/app-data", collectCursorAppBackendDiagnostics,
       async collectCursorAppDiagnostics(input) { assert.deepEqual({ ...input }, { home: "/owned/state", ...identity }); return {}; },
       async collectCursorAppHookDiagnostics(input) { assert.deepEqual({ ...input }, { home: "/owned/app-data", ...identity }); return { readStatus: "absent" }; },
@@ -118,6 +122,9 @@ test("failure collection reads existing diagnostics without replacing the origin
     });
     assert.equal(report.errorCode, "CURSOR_APP_ADD_TIMEOUT");
     assert.equal(report.backendDiagnostics.readStatus, failed ? "unavailable" : "present");
+    assert.equal(report.skillHookContext.matched, false);
+    if (saved) assert.equal(report.skillHookContext, snapshot);
+    else assert.deepEqual(report.skillHookContext, collectCursorAppSkillHookContext({ run, runs: [run] }));
     assert.equal(JSON.stringify(report).includes(privateCanary), false);
   }
 });
@@ -296,6 +303,50 @@ test("Skill tools require the exact manually attached body and full installed fi
       paths.join(skillRoot, "references/memorax-search.md"));
     assert.throws(() => tools(run, [{ kind: "read", path: installed, content }]), { code: "CURSOR_APP_SKILL_NOT_READ" });
   }
+});
+
+test("Skill Hook assertion consumes initial, dynamic and completed Exec contexts with exact session binding", () => {
+  const sessionId = "11111111-1111-4111-8111-111111111111", other = "22222222-2222-4222-8222-222222222222";
+  for (const location of ["initial", "dynamic", "exec"]) for (const current of [true, false]) {
+    const content = "MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=" + (current ? sessionId : other);
+    const run = { conversationId: sessionId, prompt: "/memorax-code prompt", requestContextCloseCount: 1, turnRefs: [],
+      requestContext: { hooksAdditionalContext: "" },
+      selectedCursorRules: [{ fullPath: "/owned/skill/SKILL.md", content: "# Skill\n", manuallyAttached: true }] };
+    if (location === "initial") run.inputRequestContext = { hooksAdditionalContext: content };
+    if (location === "dynamic") run.requestContextParts = { dynamicContext: { hooksAdditionalContext: content } };
+    if (location === "exec") run.execHookAdditionalContexts = [{ hookEventName: "sessionStart", content }];
+    const tools = nativeFunction("toolSteps", { process: { platform: "linux" }, skillRoot: "/owned/skill", skillText: "# Skill\n",
+      interruption: undefined, report: {}, agent: { runs: [run] }, turns: [{ sessionId, prompt: run.prompt, operation: "search" }] });
+    if (current) assert.equal(tools(run, []).path, "/owned/skill/SKILL.md");
+    else assert.throws(() => tools(run, []), { code: "CURSOR_APP_SKILL_HOOK_CONTEXT" });
+  }
+});
+
+test("Skill Hook failure preserves the first context snapshot across transport retries", () => {
+  const sessionId = "11111111-1111-4111-8111-111111111111";
+  const first = { conversationId: sessionId, prompt: "/memorax-code prompt", requestContextCloseCount: 1, turnRefs: [],
+    inputRequestContext: { hooksAdditionalContext: privateCanary } };
+  const retry = { ...first, inputRequestContext: undefined, requestContext: { hooksAdditionalContext: "different context" } };
+  const agent = { runs: [first] }, report = {};
+  const tools = nativeFunction("toolSteps", { process: { platform: "linux" }, skillRoot: "/owned/skill", skillText: "# Skill\n",
+    interruption: undefined, agent, report, turns: [{ sessionId, prompt: first.prompt, operation: "search" }] });
+  assert.throws(() => tools(first, []), { code: "CURSOR_APP_SKILL_HOOK_CONTEXT" });
+  const snapshot = report.skillHookContext;
+  assert.equal(snapshot.current.initial.present, true);
+  assert.equal(snapshot.current.fresh.present, false);
+  agent.runs.push(retry);
+  assert.throws(() => tools(retry, []), { code: "CURSOR_APP_SKILL_HOOK_CONTEXT" });
+  assert.equal(report.skillHookContext, snapshot);
+  assert.notDeepEqual(snapshot, collectCursorAppSkillHookContext({ run: retry, runs: agent.runs }));
+  const marker = "MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=" + sessionId;
+  retry.execHookAdditionalContexts = [{ hookEventName: "sessionStart", content: marker }];
+  retry.selectedCursorRules = [{ fullPath: "/owned/skill/SKILL.md", content: "# Skill\n", manuallyAttached: true }];
+  assert.equal(tools(retry, []).path, "/owned/skill/SKILL.md");
+  first.inputRequestContext.hooksAdditionalContext = marker;
+  assert.equal(collectCursorAppSkillHookContext({ run: first, runs: agent.runs }).matched, true);
+  assert.equal(report.skillHookContext, snapshot);
+  assert.equal(snapshot.matched, false);
+  assert.equal(JSON.stringify(snapshot).includes(privateCanary), false);
 });
 
 test("Skill shell steps bind the isolated endpoint, state and session with macOS network permission", () => {

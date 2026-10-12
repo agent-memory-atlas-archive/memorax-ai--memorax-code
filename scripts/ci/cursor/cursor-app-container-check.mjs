@@ -11,6 +11,7 @@ import { projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics,
   projectCursorAppBackendDiagnostics,
   projectCursorAppShellDiagnostics, projectCursorAppStopDiagnostics, projectCursorAppWindowsStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 import { projectCursorAppHookDiagnostics } from "./cursor-app-hook-diagnostics.mjs";
+import { projectCursorAppSkillHookContext } from "./cursor-app-hook-context.mjs";
 
 const exec = promisify(execFile);
 const scripts = dirname(fileURLToPath(import.meta.url));
@@ -129,6 +130,7 @@ export function projectNativeReport(input, { expectedVersion = provenance.cursor
   if (input.memoryRequestCount !== undefined) report.memoryRequestCount = count(input.memoryRequestCount);
   if (input.diagnostics !== undefined) report.diagnostics = projectCursorAppDiagnostics(input.diagnostics);
   if (input.status === "FAIL" && input.nativeHooks !== undefined) report.nativeHooks = projectCursorAppHookDiagnostics(input.nativeHooks);
+  if (input.status === "FAIL" && input.skillHookContext !== undefined) report.skillHookContext = projectCursorAppSkillHookContext(input.skillHookContext);
   if (input.status === "FAIL" && input.backendDiagnostics !== undefined) report.backendDiagnostics = projectCursorAppBackendDiagnostics(input.backendDiagnostics);
   if (input.appLaunch !== undefined) report.appLaunch = projectCursorAppLaunchDiagnostics(input.appLaunch);
   if (input.status === "FAIL" && input.candidateStop !== undefined) report.candidateStop = projectCursorAppStopDiagnostics(input.candidateStop);
@@ -236,7 +238,7 @@ export async function readReleaseManifest(path) {
 export async function stageCursorAppChecks(directory) {
   for (const [client, names] of [
     ["cursor", ["cursor-app-native-check.mjs", "cursor-app-protocol.mjs", "cursor-app-mock-server.mjs", "cursor-app-native-content-check.mjs",
-      "cursor-app-memory-check.mjs", "cursor-app-repo-memory-check.mjs", "cursor-app-diagnostics.mjs", "cursor-app-hook-diagnostics.mjs"]],
+      "cursor-app-memory-check.mjs", "cursor-app-repo-memory-check.mjs", "cursor-app-diagnostics.mjs", "cursor-app-hook-diagnostics.mjs", "cursor-app-hook-context.mjs"]],
     ["codex", ["codex-native-content-check.mjs"]],
   ]) {
     await mkdir(join(directory, client), { recursive: true });

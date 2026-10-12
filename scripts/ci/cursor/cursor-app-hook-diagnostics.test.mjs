@@ -8,9 +8,10 @@ import { collectCursorAppHookDiagnostics, projectCursorAppHookDiagnostics } from
 
 const secret = "PRIVATE_PROMPT_PATH_EMAIL_TOKEN_CANARY";
 const rule = "\u2550".repeat(87), command = `node /${secret}/runtime-hook.mjs --memorax-code-cursor-hook-v1`;
-function execution(request, { output = { continue: true }, cmd = command, exit = 0, stderr = secret } = {}) {
-  return [rule, request.hook_event_name, rule, `Command: ${cmd} (42ms) exit code: ${exit}`, "", "INPUT:",
-    JSON.stringify(request, null, 2), "", "OUTPUT:", output === null ? "(empty)" : JSON.stringify(output, null, 2),
+function execution(request, { output = { continue: true }, cmd = command, exit = 0, stderr = secret,
+  step = request.hook_event_name, input = JSON.stringify(request, null, 2) } = {}) {
+  return [rule, step, rule, `Command: ${cmd} (42ms) exit code: ${exit}`, "", "INPUT:",
+    input, "", "OUTPUT:", output === null ? "(empty)" : JSON.stringify(output, null, 2),
     "", "STDERR:", stderr, rule, ""].join("\n");
 }
 async function fixture(t) {
@@ -37,6 +38,9 @@ test("native Hook blocks bind owned executions to exact session/turn and retain 
   assert.equal(result.readStatus, "present");
   assert.equal(result.filesRead, 1);
   assert.equal(result.unscopedRequests.beforeSubmitPrompt, 1);
+  assert.equal(result.ownedExecutionBlocks.beforeSubmitPrompt, 3);
+  assert.equal(result.ownedExecutionBlocks.stop, 1);
+  assert.deepEqual(result.filteredExecutionBlocks.beforeSubmitPrompt, { parse: 0, event: 0, session: 1, generation: 1 });
   assert.deepEqual(result.executions.map(({ step, scope }) => ({ step, scope })),
     [{ step: "beforeSubmitPrompt", scope: "turn" }, { step: "stop", scope: "turn" }]);
   assert.deepEqual(result.executions[0], { step: "beforeSubmitPrompt", scope: "turn", generation: "matched",
@@ -77,6 +81,62 @@ test("unbound, malformed and partial log text never manufactures execution evide
       responseKind: secret, additionalContextPresent: secret, stderrPresent: secret, raw: secret }] });
   assert.ok(!JSON.stringify(projected).includes(secret));
   assert.equal(projected.executions[0].exitCode, null);
+});
+
+test("owned execution counts retain the first rejection reason without accepting discarded identities", async (t) => {
+  const f = await fixture(t);
+  await writeFile(f.log,
+    execution(f.request, { input: `{${secret}` })
+    + execution(f.request, { input: JSON.stringify([secret]) })
+    + execution({ ...f.request, hook_event_name: "stop", conversation_id: randomUUID(), generation_id: randomUUID() },
+      { step: "beforeSubmitPrompt" })
+    + execution({ ...f.request, conversation_id: undefined, session_id: undefined })
+    + execution({ ...f.request, conversation_id: randomUUID(), generation_id: randomUUID() })
+    + execution({ ...f.request, generation_id: randomUUID() })
+    + execution(f.request, { cmd: `node /${secret}/unowned.mjs` })
+    + execution(f.request, { step: "unknown" })
+    + execution(f.request).slice(0, -100));
+  const result = await f.collect();
+  assert.equal(result.readStatus, "present");
+  assert.deepEqual(result.executions, []);
+  assert.equal(result.ownedExecutionBlocks.beforeSubmitPrompt, 6);
+  assert.deepEqual(result.filteredExecutionBlocks.beforeSubmitPrompt, { parse: 2, event: 1, session: 2, generation: 1 });
+  assert.equal(result.ownedExecutionBlocks.stop, 0);
+  assert.deepEqual(projectCursorAppHookDiagnostics(result), result);
+  for (const privateValue of [secret, command, f.home, f.sessionId, f.turnId]) {
+    assert.ok(!JSON.stringify(result).includes(privateValue));
+  }
+});
+
+test("block count projections reject unknown fields and invalid or unbounded values", () => {
+  for (const invalid of [-1, 1.5, 4097, Number.MAX_SAFE_INTEGER + 1, Infinity, NaN, secret, {}, null]) {
+    const result = projectCursorAppHookDiagnostics({
+      ownedExecutionBlocks: { beforeSubmitPrompt: invalid, stop: 4096, [secret]: 1 },
+      filteredExecutionBlocks: { beforeSubmitPrompt: { parse: 3, event: invalid, session: invalid, generation: invalid, [secret]: 1 },
+        [secret]: { parse: 1 } },
+    });
+    assert.equal(result.ownedExecutionBlocks.beforeSubmitPrompt, 0);
+    assert.equal(result.ownedExecutionBlocks.stop, 4096);
+    assert.deepEqual(result.filteredExecutionBlocks.beforeSubmitPrompt, { parse: 3, event: 0, session: 0, generation: 0 });
+    assert.ok(!JSON.stringify(result).includes(secret));
+  }
+});
+
+test("oversized execution reports preserve prior safe block and rejection counts", async (t) => {
+  const f = await fixture(t);
+  await writeFile(f.log, execution(f.request).repeat(32)
+    + execution(f.request, { input: JSON.stringify(null) })
+    + execution({ ...f.request, hook_event_name: "stop" })
+    + execution({ ...f.request, hook_event_name: "preCompact" }));
+  const result = await f.collect();
+  assert.equal(result.readStatus, "oversized");
+  assert.equal(result.ownedExecutionBlocks.beforeSubmitPrompt, 33);
+  assert.equal(result.ownedExecutionBlocks.stop, 1);
+  assert.equal(result.ownedExecutionBlocks.preCompact, 0);
+  assert.deepEqual(result.filteredExecutionBlocks.beforeSubmitPrompt, { parse: 1, event: 0, session: 0, generation: 0 });
+  assert.equal(result.executions.length, 32);
+  assert.deepEqual(projectCursorAppHookDiagnostics(result), result);
+  for (const privateValue of [secret, f.home, f.sessionId, f.turnId]) assert.ok(!JSON.stringify(result).includes(privateValue));
 });
 
 test("reads are bounded and reject unsafe paths, malformed identities and invalid UTF-8", async (t) => {

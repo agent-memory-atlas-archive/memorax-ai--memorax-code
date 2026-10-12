@@ -4,8 +4,9 @@ import { isAbsolute, join, win32 } from "node:path";
 
 const steps = ["sessionStart", "beforeSubmitPrompt", "preCompact", "afterAgentResponse", "stop"];
 const statuses = ["present", "absent", "invalid", "unsafe", "oversized", "unavailable"];
+const filterReasons = ["parse", "event", "session", "generation"];
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
-const maxBytes = 2 * 1024 * 1024, maxFiles = 16, maxExecutions = 32;
+const maxBytes = 2 * 1024 * 1024, maxFiles = 16, maxExecutions = 32, maxExecutionBlocks = 4096;
 const directories = [/^logs$/, /^\d{8}T\d{6}$/, /^window\d+(?:_wb\d+)?$/, /^output_\d{8}T\d{6}$/];
 const filename = /^cursor\.hooks(?:\.workspaceId-[a-zA-Z0-9_-]{1,128})?\.log$/;
 const record = (value) => Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -17,6 +18,10 @@ export function projectCursorAppHookDiagnostics(value) {
     readStatus: choice(value?.readStatus, statuses, "unavailable"), filesRead: count(value?.filesRead, maxFiles),
     // Request lines have no native identity; they are never evidence for this Turn.
     unscopedRequests: Object.fromEntries(steps.map((step) => [step, count(value?.unscopedRequests?.[step], 4096)])),
+    // Only complete, marker-owned blocks enter these counts, before identity filtering.
+    ownedExecutionBlocks: Object.fromEntries(steps.map((step) => [step, count(value?.ownedExecutionBlocks?.[step], maxExecutionBlocks)])),
+    filteredExecutionBlocks: Object.fromEntries(steps.map((step) => [step, Object.fromEntries(filterReasons
+      .map((reason) => [reason, count(value?.filteredExecutionBlocks?.[step]?.[reason], maxExecutionBlocks)]))])),
     executions: (Array.isArray(value?.executions) ? value.executions.slice(0, maxExecutions) : [])
       .filter((item) => record(item) && steps.includes(item.step) && ["turn", "session"].includes(item.scope))
       .map((item) => ({
@@ -49,16 +54,22 @@ function collectLog(text, sessionId, turnId, result) {
   }
   // Cursor's Hooks output channel frames INPUT/OUTPUT JSON with 87 double rules.
   const block = /(?:^|\n)\u2550{87}\n(\w+)\n\u2550{87}\nCommand: ([^\n]+) \(\d+ms\) exit code: (\d+|N\/A)\n\nINPUT:\n([\s\S]*?)\n\nOUTPUT:\n([\s\S]*?)\n\u2550{87}(?=\n|$)/g;
+  let ownedBlocks = steps.reduce((total, step) => total + result.ownedExecutionBlocks[step], 0);
   for (const match of text.matchAll(block)) {
     const [, step, command, exit, input, output] = match;
     if (!steps.includes(step) || !ownedCommand(command)) continue;
+    if (ownedBlocks >= maxExecutionBlocks) throw "oversized";
+    ownedBlocks += 1;
+    result.ownedExecutionBlocks[step] += 1;
+    const filtered = result.filteredExecutionBlocks[step];
     let request;
-    try { request = JSON.parse(input); } catch { continue; }
-    if (!record(request) || request.hook_event_name !== step
-      || (request.conversation_id ?? request.session_id) !== sessionId) continue;
+    try { request = JSON.parse(input); } catch { filtered.parse += 1; continue; }
+    if (!record(request)) { filtered.parse += 1; continue; }
+    if (request.hook_event_name !== step) { filtered.event += 1; continue; }
+    if ((request.conversation_id ?? request.session_id) !== sessionId) { filtered.session += 1; continue; }
     const generation = request.generation_id === undefined ? "absent"
       : typeof request.generation_id === "string" && uuid.test(request.generation_id) ? "matched" : "invalid";
-    if (generation === "matched" && request.generation_id !== turnId) continue;
+    if (generation === "matched" && request.generation_id !== turnId) { filtered.generation += 1; continue; }
     const split = output.indexOf("\n\nSTDERR:\n"), responseText = split < 0 ? output : output.slice(0, split);
     let response, responseKind = responseText === "(empty)" ? "empty" : "invalid";
     if (responseKind !== "empty") {

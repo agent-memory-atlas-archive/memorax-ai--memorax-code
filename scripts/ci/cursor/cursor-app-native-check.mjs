@@ -18,6 +18,7 @@ import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics,
   collectCursorAppShellDiagnostics, collectCursorAppShellOutputDiagnostics,
   projectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 import { collectCursorAppHookDiagnostics } from "./cursor-app-hook-diagnostics.mjs";
+import { collectCursorAppSkillHookContext } from "./cursor-app-hook-context.mjs";
 
 const [packageRoot, appPath, expectedVersion, playwrightRoot, reportDir, expectedNodeMajor = "24"] = process.argv.slice(2);
 const report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: process.platform,
@@ -183,12 +184,9 @@ function toolSteps(run, results) {
   if (!fixture.operation) return;
   const reference = join(skillRoot, "references", `memorax-${fixture.operation}.md`);
   if (results.length === 0) {
-    const sessionRuns = agent.runs.filter((item) => item.conversationId === run.conversationId
-      && (item === run || (item.completed && run.turnRefs.some((ref) => ref.equals(item.turnBlobId)))));
-    const contexts = sessionRuns.flatMap((item) => [item.requestContext?.hooksAdditionalContext,
-      ...(item.userHookAdditionalContexts ?? []).map((context) => context.content)]).filter(Boolean);
-    check(contexts.some((context) => context.includes(`MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=${run.conversationId}`)),
-      "CURSOR_APP_SKILL_HOOK_CONTEXT");
+    const context = collectCursorAppSkillHookContext({ run, runs: agent.runs });
+    if (!context.matched) report.skillHookContext ??= context;
+    check(context.matched, "CURSOR_APP_SKILL_HOOK_CONTEXT");
     const installedPath = join(skillRoot, "SKILL.md");
     // Cursor's URI.fsPath serializes Windows drive letters in lowercase.
     const nativePath = process.platform === "win32" ? installedPath.replace(/^[A-Z]:/, (drive) => drive.toLowerCase()) : installedPath;
@@ -809,6 +807,7 @@ try {
     debugEndpointSeen: appDebugEndpointSeen, exitCode: app.exitCode, signal: app.signalCode,
     spawnError: appSpawnError, log: appLaunchLog });
   const run = agent?.runs.at(-1);
+  if (run) report.skillHookContext ??= collectCursorAppSkillHookContext({ run, runs: agent.runs });
   if (env && run) report.diagnostics = await collectCursorAppDiagnostics({ home: env.MEMORAX_CODE_HOME,
     sessionId: run.conversationId, turnId: run.requestId });
   if (env && run) {

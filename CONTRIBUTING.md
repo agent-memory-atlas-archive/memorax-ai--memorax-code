@@ -1301,6 +1301,15 @@ App/installer logs, command output, transcripts, database files, Hook traces,
 credentials, PIDs and private paths are excluded. Diagnostics never replace the
 original failure or relax acceptance.
 
+Skill Hook checks read initial, fresh, dynamic, user-message and completed Exec
+contexts from the current native run and its referenced, completed same-session
+history. Failure reports project only presence and session-marker match booleans
+for each source and retain the first failed Skill Hook snapshot across transport
+retries. Native Hook diagnostics count complete marker-owned execution
+blocks and their first filtering reason: JSON parsing, event, session or generation
+mismatch. A zero block count does not prove that a Hook never executed; incomplete
+or unrecognized log frames are outside this projection.
+
 Real login, hosted models, OS credential-store isolation, native Continue/Retry/
 Edit, Backend restart, preauthorized tools, running-tool interruption,
 late-approval races, linked worktrees, cross-workspace Search, successful Repo
