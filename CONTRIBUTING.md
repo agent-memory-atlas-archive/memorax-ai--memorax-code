@@ -1288,8 +1288,9 @@ Docker daemon:
 
 ```bash
 node --test scripts/ci/cursor/cursor-app-*.test.mjs scripts/ci/cursor/cursor-lifecycle*.test.mjs
+memorax_candidate_tarball="$(node -p "require('./dist/npm/main-pack.json')[0].filename")"
 node scripts/ci/cursor/cursor-app-container-check.mjs \
-  dist/npm/tarballs/memorax-memorax-code-0.1.19.tgz \
+  "dist/npm/tarballs/$memorax_candidate_tarball" \
   "$memorax_dev_root/cursor-app-report"
 ```
 
