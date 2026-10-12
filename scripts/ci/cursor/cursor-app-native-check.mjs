@@ -17,7 +17,7 @@ import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics,
   collectCursorAppBackendDiagnostics,
   collectCursorAppShellDiagnostics, collectCursorAppShellOutputDiagnostics,
   projectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
-import { collectCursorAppHookDiagnostics } from "./cursor-app-hook-diagnostics.mjs";
+import { collectCursorAppHookDiagnostics, collectCursorAppHookTiming, projectCursorAppHookTiming } from "./cursor-app-hook-diagnostics.mjs";
 import { collectCursorAppSkillHookContext } from "./cursor-app-hook-context.mjs";
 
 const [packageRoot, appPath, expectedVersion, playwrightRoot, reportDir, expectedNodeMajor = "24"] = process.argv.slice(2);
@@ -55,6 +55,8 @@ let appLaunchLog = "", appSpawnError, appDebugEndpointSeen = false;
 let root, env, chromium, userData, workspace, skillRoot, skillText;
 let interruption, denial, repoMemory, repoMemoryHelper, repoMemoryDefinition;
 let macos, macosPaths, windows, windowsPaths, backendPort = 18787, debugPort = 9222;
+let appStartedAt, appLaunch = 0, activeHookTiming;
+const readyHookSessions = new Map();
 const observedMacosPids = new Set();
 const referenceTexts = new Map();
 const exec = promisify(execFile);
@@ -94,6 +96,55 @@ async function waitFor(predicate, code, timeoutMs = 30000) {
     await delay(200);
   } while (Date.now() < deadline);
   check(false, code);
+}
+function beginHookTiming(phase, sessionId, { runIndex = null, resumedSession = false } = {}) {
+  if (process.platform !== "linux") return;
+  activeHookTiming = { phase, appLaunch, sessionId, runIndex, resumedSession,
+    observedMs: { sessionStartReady: readyHookSessions.get(sessionId) ?? null } };
+}
+function markHookSubmit() {
+  if (activeHookTiming) activeHookTiming.observedMs.submit ??= Date.now() - appStartedAt;
+}
+async function observeHookTiming() {
+  if (!activeHookTiming) return;
+  const current = activeHookTiming;
+  // Bind to the first transport attempt for this submission, even if Cursor starts a retry.
+  const run = current.runIndex === null ? undefined : agent?.runs[current.runIndex];
+  const matched = run?.conversationId === current.sessionId && typeof run?.requestId === "string";
+  if (matched) current.observedMs.modelRequest ??= Date.now() - appStartedAt;
+  const timing = await collectCursorAppHookTiming({ home: userData, startedAt: appStartedAt,
+    sessionId: current.sessionId, ...(matched ? { turnId: run.requestId } : {}) });
+  if (timing.sessionStartReady) {
+    current.observedMs.sessionStartReady ??= Date.now() - appStartedAt;
+    readyHookSessions.set(current.sessionId, current.observedMs.sessionStartReady);
+  }
+  if (matched && current.observedMs.turnStart == null) {
+    const diagnostics = await collectCursorAppDiagnostics({ home: env.MEMORAX_CODE_HOME,
+      sessionId: current.sessionId, turnId: run.requestId });
+    if (diagnostics.trace?.readStatus === "present" && diagnostics.trace.turnStartCount === 1) {
+      current.observedMs.turnStart = Date.now() - appStartedAt;
+    }
+  }
+  current.snapshot = projectCursorAppHookTiming({ ...timing, ...current });
+  return current.snapshot;
+}
+function finishHookTiming() {
+  if (!activeHookTiming) return;
+  const snapshots = report.hookTimings ??= [];
+  if (snapshots.length < 32) snapshots.push(projectCursorAppHookTiming(activeHookTiming.snapshot ?? activeHookTiming));
+  activeHookTiming = undefined;
+}
+async function waitForHookReady(phase, sessionId) {
+  if (process.platform !== "linux") return;
+  beginHookTiming(phase, sessionId);
+  report.stage = phase === "config" ? "hook-config-ready" : "hook-session-ready";
+  try {
+    // This isolates startup; a later native configuration reload can still race submission.
+    await waitFor(async () => {
+      const timing = await observeHookTiming();
+      return timing?.requiredUserHooksLoaded && (phase === "config" || timing.sessionStartReady);
+    }, phase === "config" ? "CURSOR_APP_HOOK_CONFIG_READY_TIMEOUT" : "CURSOR_APP_SESSION_START_READY_TIMEOUT");
+  } finally { finishHookTiming(); }
 }
 async function assertMarkerAbsent(marker, code) {
   try { await lstat(marker); check(false, code); }
@@ -257,7 +308,25 @@ async function stopApp() {
   app = undefined;
   if (closeError) throw closeError;
 }
-async function assertProcessesStopped(options) {
+async function assertProcessesStopped(options = {}) {
+  if (windows) {
+    const allowed = ["workspace-switch", "app-restart", "repo-memory-worker", "cleanup"];
+    const stage = options.stage ?? report.stage;
+    let diagnostic;
+    try {
+      diagnostic = await windows.waitForWindowsProcessesExit({ appPath, packageRoot, stateHome: env.MEMORAX_CODE_HOME,
+        marker: interruption?.marker, encodedCommand: interruption?.encodedCommand,
+        includeBackend: options.includeBackend ?? true, selfPid: process.pid, env });
+    } catch (error) { diagnostic = error?.windowsProcessAudit; throw error; }
+    finally {
+      if (diagnostic) {
+        const audits = report.windowsProcessAudits ??= [];
+        if (audits.length < 5) audits.push({ stage: allowed.includes(stage) ? stage : "other",
+          ...windows.projectWindowsProcessAuditDiagnostics(diagnostic) });
+      }
+    }
+    return;
+  }
   // Never kill discovered PIDs; residual descendants fail acceptance for runner/container teardown.
   for (let attempt = 0; attempt < 25; attempt++) {
     if (!await ownedProcessesRemain(options)) return;
@@ -266,6 +335,7 @@ async function assertProcessesStopped(options) {
   check(false, "CURSOR_APP_CLEANUP_DESCENDANTS");
 }
 async function startApp() {
+  if (process.platform === "linux") { appStartedAt = Date.now(); appLaunch += 1; readyHookSessions.clear(); }
   appLaunchLog = ""; appSpawnError = undefined; appDebugEndpointSeen = false;
   const endpoint = macos?.createDevToolsEndpointReader(debugPort);
   let endpointError;
@@ -302,6 +372,7 @@ async function startApp() {
     await window.driver.executeCommand("workbench.action.devAutoLoginFakeForTesting");
   }), "CURSOR_APP_FAKE_AUTH_TIMEOUT");
   await bounded(page.evaluate(() => window.driver.whenWorkbenchRestored()), "CURSOR_APP_WORKBENCH_RESTORE_TIMEOUT", 30000);
+  await waitForHookReady("config");
 }
 async function openSession(sessionId) {
   report.stage = "session-open";
@@ -323,6 +394,7 @@ async function openSession(sessionId) {
   const hasHistory = agent.runs.some((run) => run.conversationId === selected && run.completed);
   await waitFor(async () => await composer.count() === 1
     && (!hasHistory || await composer.getAttribute("data-composer-status") === "completed"), "CURSOR_APP_COMPOSER_NOT_READY");
+  if (!sessionId) await waitForHookReady("session", selected);
   return selected;
 }
 function assertSnapshot(sessionId) {
@@ -347,10 +419,12 @@ async function submitPrompt(input, fixture) {
   } else {
     await input.fill(fixture.prompt);
   }
+  markHookSubmit();
   await input.press("Enter");
 }
 async function runTurn(sessionId, fixture = fixtures[turns.length]) {
   const index = agent.runs.length;
+  beginHookTiming("turn", sessionId, { runIndex: index, resumedSession: agent.runs.some((run) => run.conversationId === sessionId) });
   const decidedTools = new Set();
   turns.push({ sessionId, workspaceName: basename(workspace), ...fixture });
   report.stage = "native-submit";
@@ -359,6 +433,7 @@ async function runTurn(sessionId, fixture = fixtures[turns.length]) {
   await submitPrompt(input, fixture);
   report.stage = "agent-transport";
   await waitFor(async () => {
+    await observeHookTiming();
     check(!agent.errors.length, agent.errors[0]);
     const run = agent.runs[index], pending = run?.pendingTool;
     if (pending?.kind === "shell" && !decidedTools.has(pending.toolCallId)) {
@@ -400,7 +475,10 @@ async function runTurn(sessionId, fixture = fixtures[turns.length]) {
   delete report.nativeContentError;
   report.evidence.nativeContent.push(content);
   report.stage = "automatic-add";
-  await waitFor(() => memoryRequests.length >= turns.length + turns.filter((turn) => turn.operation).length, "CURSOR_APP_ADD_TIMEOUT");
+  await waitFor(async () => {
+    await observeHookTiming();
+    return memoryRequests.length >= turns.length + turns.filter((turn) => turn.operation).length;
+  }, "CURSOR_APP_ADD_TIMEOUT");
   assertWriteback();
   const events = (await readFile(join(env.MEMORAX_CODE_HOME, "debug/traces/cursor/sessions", sessionId, "events.jsonl"), "utf8"))
     .trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
@@ -425,6 +503,8 @@ async function runTurn(sessionId, fixture = fixtures[turns.length]) {
     await assertMarkerAbsent(denial.marker, "CURSOR_APP_PERMISSION_TOOL_EXECUTED");
     report.evidence.shellDenied = true;
   }
+  await observeHookTiming();
+  finishHookTiming();
 }
 
 async function assertInterrupted({ recovered = false } = {}) {
@@ -801,6 +881,8 @@ try {
   report.stage = "cleanup";
 } catch (error) {
   report.errorCode = safeCode(error);
+  await observeHookTiming().catch(() => {});
+  finishHookTiming();
   const shellResult = collectCursorAppShellDiagnostics(agent?.firstShellFailure);
   if (shellResult) report.shellResult = shellResult;
   if (app) report.appLaunch = collectCursorAppLaunchDiagnostics({ spawned: Boolean(app.pid),
@@ -822,7 +904,7 @@ finally {
   try { await stopApp(); } catch (error) { report.cleanupError = safeCode(error); }
   try { if (started) await cli("stop"); } catch (error) { report.cleanupError ??= safeCode(error); }
   try {
-    if (started) await assertProcessesStopped();
+    if (started) await assertProcessesStopped({ stage: "cleanup" });
   } catch (error) { report.cleanupError ??= safeCode(error); }
   if (agent) {
     await bounded(agent.close(), "CURSOR_APP_AGENT_CLEANUP").catch(() => { report.cleanupError = "CURSOR_APP_AGENT_CLEANUP"; });

@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { collectCursorAppHookDiagnostics, projectCursorAppHookDiagnostics } from "./cursor-app-hook-diagnostics.mjs";
+import { collectCursorAppHookDiagnostics, projectCursorAppHookDiagnostics, collectCursorAppHookTiming, projectCursorAppHookTiming } from "./cursor-app-hook-diagnostics.mjs";
 
 const secret = "PRIVATE_PROMPT_PATH_EMAIL_TOKEN_CANARY";
 const rule = "\u2550".repeat(87), command = `node /${secret}/runtime-hook.mjs --memorax-code-cursor-hook-v1`;
@@ -179,4 +179,102 @@ test("discovery stays in native output directories and bounds file count and tot
   await rm(join(f.home, "logs"), { recursive: true });
   for (let index = 0; index < 513; index++) await writeFile(join(f.home, `ignored-${index}`), "");
   assert.equal((await f.collect()).readStatus, "oversized");
+});
+
+const startedAt = Date.parse("2026-10-09T12:00:00.000Z");
+const logLine = (offset, text) => "[" + new Date(startedAt + offset).toISOString() + "] " + text + "\n";
+const initialized = logLine(1, "Initializing Cursor Hooks Service...");
+const reload = logLine(2, "Reloading hooks configuration...");
+const loaded = logLine(3, "Loaded 5 user hook(s) for steps: sessionStart, beforeSubmitPrompt, preCompact, afterAgentResponse, stop");
+const marker = (id) => "MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=" + id;
+
+test("Hook startup timing accepts only the current launch and projects native times separately from observations", async (t) => {
+  const f = await fixture(t);
+  const start = { ...f.request, hook_event_name: "sessionStart", generation_id: "", prompt: undefined };
+  await writeFile(f.log, initialized + reload + loaded
+    + execution(start, { output: { additional_context: marker(f.sessionId) }, stderr: "" })
+    + logLine(10, "Hook step requested: beforeSubmitPrompt") + execution(f.request));
+  const result = await collectCursorAppHookTiming({ ...f, startedAt });
+  assert.equal(result.readStatus, "present");
+  assert.equal(result.currentLogFiles, 1);
+  assert.equal(result.requiredUserHooksLoaded, true);
+  assert.equal(result.sessionStartReady, true);
+  assert.deepEqual(result.counts, { reload: 1, userConfigLoad: 1, beforeSubmitRequest: 1, beforeSubmitExecution: 1 });
+  assert.deepEqual(result.nativeLogMs, { firstReload: 2, lastReload: 2, lastRequiredUserConfigLoad: 3, lastBeforeSubmitRequest: 10 });
+  assert.deepEqual(result.observedMs, { sessionStartReady: null, submit: null, modelRequest: null, turnStart: null });
+  assert.deepEqual(projectCursorAppHookTiming(result), result);
+  for (const value of [secret, f.home, f.sessionId, f.turnId]) assert.equal(JSON.stringify(result).includes(value), false);
+  // The same complete file belongs to an earlier App after restart.
+  const old = await collectCursorAppHookTiming({ ...f, startedAt: startedAt + 20 });
+  assert.equal(old.currentLogFiles, 0);
+  assert.equal(old.requiredUserHooksLoaded, false);
+  assert.equal(old.sessionStartReady, false);
+});
+
+test("configuration gate rejects incomplete, stale, foreign and invalid loads and resets on the next reload", async (t) => {
+  const f = await fixture(t);
+  for (const text of [loaded, reload + loaded, initialized + reload,
+    initialized + loaded.replace("5 user", "5 project"),
+    initialized + loaded.replace("beforeSubmitPrompt, ", ""),
+    initialized + loaded.replace("5 user", "4 user"),
+    initialized + loaded + logLine(4, "Reloading hooks configuration..."),
+    initialized + loaded + logLine(4, "ERROR: Failed to parse user hooks configuration"),
+    initialized + loaded + logLine(4, "No user hooks configuration found"),
+    initialized + loaded.slice(0, -1), initialized + loaded + execution(f.request).slice(0, -20),
+    execution(f.request, { stderr: initialized + loaded }),
+    execution(f.request).slice(0, -20) + initialized + loaded]) {
+    await writeFile(f.log, text);
+    assert.equal((await collectCursorAppHookTiming({ home: f.home, startedAt })).requiredUserHooksLoaded, false);
+  }
+  await writeFile(f.log, initialized + reload + loaded + logLine(4, "Reloading hooks configuration...")
+    + loaded.replace("00.003Z", "00.005Z"));
+  const next = await collectCursorAppHookTiming({ home: f.home, startedAt });
+  assert.equal(next.requiredUserHooksLoaded, true);
+  assert.equal(next.counts.reload, 2);
+  assert.equal(next.nativeLogMs.lastRequiredUserConfigLoad, 5);
+});
+
+test("session startup requires an owned complete successful block, exact identity and matching context", async (t) => {
+  const f = await fixture(t), other = randomUUID();
+  const start = { ...f.request, hook_event_name: "sessionStart", generation_id: "", prompt: undefined };
+  const options = { output: { additional_context: marker(f.sessionId) }, stderr: "" };
+  for (const [request, patch, partial] of [[start, {}, false],
+    [{ ...start, conversation_id: other }, {}, false], [{ ...start, session_id: other }, {}, false],
+    [{ ...start, generation_id: f.turnId }, {}, false], [{ ...start, generation_id: "invalid" }, {}, false],
+    [start, { cmd: "node /unowned-hook.mjs" }, false], [start, { exit: 1 }, false],
+    [start, { output: { additional_context: marker(other) } }, false],
+    [start, { output: { additional_context: marker(f.sessionId) + "-suffix" } }, false],
+    [start, { output: { continue: false, additional_context: marker(f.sessionId) } }, false],
+    [start, { output: {} }, false], [start, {}, true]]) {
+    let block = execution(request, { ...options, ...patch });
+    if (partial) block = block.slice(0, -20);
+    await writeFile(f.log, initialized + reload + loaded + block);
+    const result = await collectCursorAppHookTiming({ ...f, startedAt });
+    assert.equal(result.sessionStartReady, request === start && !Object.keys(patch).length && !partial);
+  }
+});
+
+test("timing refuses multiple current log windows, unsafe data and unknown/unbounded fields", async (t) => {
+  const f = await fixture(t);
+  await writeFile(f.log, initialized + loaded);
+  const other = join(dirname(f.log), "cursor.hooks.workspaceId-another.log");
+  await writeFile(other, initialized + loaded);
+  assert.equal((await collectCursorAppHookTiming({ ...f, startedAt })).requiredUserHooksLoaded, false);
+  await rm(other);
+  await writeFile(f.log, Buffer.alloc(2 * 1024 * 1024 + 1));
+  const oversized = await collectCursorAppHookTiming({ ...f, startedAt });
+  assert.equal(oversized.readStatus, "oversized");
+  assert.equal(oversized.requiredUserHooksLoaded, false);
+  for (const patch of [{ startedAt: NaN }, { sessionId: secret }, { turnId: secret }]) {
+    assert.equal((await collectCursorAppHookTiming({ ...f, startedAt, ...patch })).readStatus, "invalid");
+  }
+  const projected = projectCursorAppHookTiming({ phase: secret, appLaunch: 17, runIndex: 65, raw: secret,
+    requiredUserHooksLoaded: secret, sessionStartReady: secret,
+    counts: { reload: 4097, userConfigLoad: -1, beforeSubmitRequest: 2, beforeSubmitExecution: secret },
+    nativeLogMs: { firstReload: -1, lastReload: 1800001, lastRequiredUserConfigLoad: secret, lastBeforeSubmitRequest: 3 },
+    observedMs: { sessionStartReady: 0, submit: 4, modelRequest: Infinity, turnStart: 1.5 } });
+  assert.equal(JSON.stringify(projected).includes(secret), false);
+  assert.equal(projected.runIndex, null);
+  assert.equal(projected.requiredUserHooksLoaded, false);
+  assert.deepEqual(projected.observedMs, { sessionStartReady: 0, submit: 4, modelRequest: null, turnStart: null });
 });

@@ -1274,8 +1274,12 @@ Native Shell commands require their matching Run approval. On macOS the Skill
 commands request network access to the local fixture, and the worker finish
 command requests full command permissions; these are not loopback-only sandbox
 policies. Cleanup targets only owned live processes. Windows first requests
-native quit, then falls back only for the held live App child. Unconfirmed cleanup
-fails and retains isolated state for runner teardown.
+native quit, then falls back only for the held live App child. Windows process
+audits share a 60-second budget, with at most 30 seconds per query and one retry
+for a query timeout. Every successful snapshot still checks all returned
+processes; only a complete snapshot without owned processes passes. Other query
+errors and exhausted budgets fail. Unconfirmed cleanup fails and retains
+isolated state for runner teardown.
 
 #### Reproduction and Reports
 
@@ -1309,6 +1313,15 @@ retries. Native Hook diagnostics count complete marker-owned execution
 blocks and their first filtering reason: JSON parsing, event, session or generation
 mismatch. A zero block count does not prove that a Hook never executed; incomplete
 or unrecognized log frames are outside this projection.
+
+Linux waits for native user Hook configuration to load for the current App
+launch before opening a new session, then requires a successful marker-owned
+`sessionStart` for that session before its first submission. These bounded
+checks diagnose missing startup prerequisites; they do not make Cursor
+configuration reload and prompt submission atomic. Reports retain bounded
+relative Hook timing and Windows process-audit summaries on success and failure,
+so passing cells can serve as controls. Native requests and Backend registration
+remain independently observed; the fixture never supplies a missing Turn start.
 
 Real login, hosted models, OS credential-store isolation, native Continue/Retry/
 Edit, Backend restart, preauthorized tools, running-tool interruption,

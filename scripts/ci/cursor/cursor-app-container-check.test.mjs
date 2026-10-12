@@ -369,6 +369,50 @@ test("public reports drop raw data and project failure diagnostics without weake
   }
 });
 
+test("Hook timing and Windows process audits remain bounded and redacted on PASS and FAIL", () => {
+  for (const platform of ["linux", "darwin", "win32"]) {
+    for (const status of ["PASS", "FAIL"]) {
+      const input = { ...nativeReport(), platform, status };
+      input.hookTimings = Array.from({ length: 40 }, () => ({ phase: "turn", appLaunch: 1, runIndex: 0,
+        resumedSession: false, readStatus: "present", currentLogFiles: 1, requiredUserHooksLoaded: true,
+        sessionStartReady: true, counts: { reload: 2, userConfigLoad: 2, beforeSubmitRequest: 1, beforeSubmitExecution: 1 },
+        nativeLogMs: { firstReload: 1, lastReload: 20, lastRequiredUserConfigLoad: 25, lastBeforeSubmitRequest: 31 },
+        observedMs: { sessionStartReady: 28, submit: 30, modelRequest: 40, turnStart: 42 },
+        sessionId: "private-canary", startedAt: "private-canary", raw: "private-canary" }));
+      input.windowsProcessAudits = Array.from({ length: 8 }, () => ({ stage: "workspace-switch", attempts: 2,
+        elapsedMs: 30201, timeoutCount: 1, firstFailure: "timeout", finalStatus: "clear",
+        lastQuery: { elapsedMs: 1, timedOut: false, exitCode: 0, signal: "none", stdoutBytes: 2, stderrBytes: 0,
+          stdout: "private-canary", pid: "private-canary" }, command: "private-canary" }));
+      const report = projectNativeReport(input, { platform });
+      assert.equal(JSON.stringify(report).includes("private-canary"), false);
+      if (platform === "linux") {
+        assert.equal(report.hookTimings.length, 32);
+        assert.equal(report.hookTimings[0].observedMs.submit, 30);
+        assert.equal(report.hookTimings[0].runIndex, 0);
+      } else assert.equal(report.hookTimings, undefined);
+      if (platform === "win32") {
+        assert.equal(report.windowsProcessAudits.length, 5);
+        assert.equal(report.windowsProcessAudits[0].timeoutCount, 1);
+        assert.equal(report.windowsProcessAudits[0].firstFailure, "timeout");
+        assert.equal(report.windowsProcessAudits[0].finalStatus, "clear");
+      } else assert.equal(report.windowsProcessAudits, undefined);
+    }
+  }
+  const windows = { ...nativeReport(), platform: "win32", windowsProcessAudits: [{ stage: "private-canary" }, null] };
+  const report = projectNativeReport(windows, { platform: "win32" });
+  assert.ok(report.windowsProcessAudits.every((item) => item.stage === "other"));
+  assert.equal(JSON.stringify(report).includes("private-canary"), false);
+  const linux = { ...nativeReport(), hookTimings: "private-canary" };
+  assert.deepEqual(projectNativeReport(linux).hookTimings, []);
+  for (const stage of ["hook-config-ready", "hook-session-ready"]) {
+    linux.status = "FAIL"; linux.stage = stage;
+    linux.errorCode = "CURSOR_APP_HOOK_READINESS_TIMEOUT";
+    assert.equal(projectNativeReport(linux).stage, stage);
+  }
+  linux.status = "PASS";
+  assert.throws(() => projectNativeReport(linux), /CURSOR_CONTAINER_REPORT/);
+});
+
 test("FAIL retains valid partial progress but rejects arbitrary error text", () => {
   const input = { ...nativeReport(), status: "FAIL", errorCode: "CURSOR_APP_SESSION_TIMEOUT" };
   input.evidence.nativeContent.length = 2;

@@ -7,6 +7,7 @@ import { PassThrough } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { collectCursorAppBackendDiagnostics, collectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { projectCursorAppHookTiming } from "./cursor-app-hook-diagnostics.mjs";
 import { collectCursorAppSkillHookContext } from "./cursor-app-hook-context.mjs";
 
 const source = (await readFile(new URL("./cursor-app-native-check.mjs", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
@@ -15,7 +16,9 @@ function check(value, code) { if (!value) throw Object.assign(new Error(code), {
 function nativeFunction(name, context = {}) {
   const definition = source.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?(?=\\n(?:async )?function )`))?.[0];
   assert.ok(definition, name);
-  return runInNewContext(`(${definition})`, { check, Buffer, basename, dirname, join, once, collectCursorAppSkillHookContext, ...context }, { timeout: 100 });
+  return runInNewContext(`(${definition})`, { check, Buffer, basename, dirname, join, once, collectCursorAppSkillHookContext, projectCursorAppHookTiming,
+    process: { platform: "darwin" }, appLaunch: 0, readyHookSessions: new Map(),
+    beginHookTiming() {}, markHookSubmit() {}, async observeHookTiming() {}, finishHookTiming() {}, async waitForHookReady() {}, ...context }, { timeout: 100 });
 }
 function childProcess() {
   return Object.assign(new EventEmitter(), { pid: 201, exitCode: null, signalCode: null,
@@ -134,6 +137,7 @@ test("App launch preserves the sandbox and isolated arguments with a longer Wind
     const child = childProcess(), waits = [], argumentsSeen = [];
     const page = { url: () => "file:///workbench.html", evaluate: async () => true, setDefaultTimeout() {} };
     const start = nativeFunction("startApp", {
+      process: { platform },
       macos: platform === "darwin" ? { createDevToolsEndpointReader: () => ({ push() {}, get: () => "ws://127.0.0.1:12346" }) } : undefined,
       windows: platform === "win32" ? {} : undefined,
       appPath: "/owned/app", userData: "/owned/app-data", root: "/owned", workspace: "/owned/workspace",
@@ -475,4 +479,100 @@ test("preflight rejects unsupported runtimes, Linux root and unowned Windows run
       process: { env: { GITHUB_ACTIONS: actions, RUNNER_OS: "Windows" }, arch: "x64" } });
     if (actions) run(); else assert.throws(run, { code: "CURSOR_APP_WINDOWS_RUNNER" });
   }
+});
+
+test("Linux readiness uses bounded independent gates and preserves failure before any submission", async () => {
+  for (const phase of ["config", "session"]) for (const ready of [false, true]) {
+    const calls = [], report = {};
+    const gate = nativeFunction("waitForHookReady", { process: { platform: "linux" }, report,
+      beginHookTiming(value, id) { calls.push([value, id]); },
+      async observeHookTiming() { return { requiredUserHooksLoaded: ready, sessionStartReady: phase === "session" && ready }; },
+      async waitFor(predicate, code) { calls.push(code); check(await predicate(), code); },
+      finishHookTiming() { calls.push("snapshot"); },
+    });
+    if (ready) await gate(phase, "session");
+    else await assert.rejects(gate(phase, "session"), { code: phase === "config"
+      ? "CURSOR_APP_HOOK_CONFIG_READY_TIMEOUT" : "CURSOR_APP_SESSION_START_READY_TIMEOUT" });
+    assert.equal(report.stage, phase === "config" ? "hook-config-ready" : "hook-session-ready");
+    assert.equal(calls.at(-1), "snapshot");
+    assert.deepEqual(calls[0], [phase, "session"]);
+  }
+  for (const platform of ["darwin", "win32"]) {
+    await nativeFunction("waitForHookReady", { process: { platform }, beginHookTiming() { assert.fail("Linux-only gate"); } })("config");
+  }
+});
+
+test("new sessions wait for their Hook but resumed sessions do not require a new sessionStart", async () => {
+  for (const resumed of [false, true]) {
+    const calls = [], selected = "11111111-1111-4111-8111-111111111111";
+    const open = nativeFunction("openSession", { report: {}, turns: [], agent: { runs: [] }, bounded: (promise) => promise,
+      page: { async evaluate(callback, id) { return id ? undefined : { composerId: selected }; },
+        locator: () => ({ count: async () => 1 }) },
+      async waitFor(predicate) { assert.equal(await predicate(), true); },
+      async waitForHookReady(phase, id) { calls.push([phase, id]); },
+    });
+    assert.equal(await open(resumed ? selected : undefined), selected);
+    assert.deepEqual(calls, resumed ? [] : [["session", selected]]);
+  }
+});
+
+test("Hook timing binds observations to the first native attempt and snapshots contain no identity or path", async () => {
+  const sessionId = "11111111-1111-4111-8111-111111111111", turnId = "22222222-2222-4222-8222-222222222222";
+  const current = { phase: "turn", appLaunch: 1, sessionId, runIndex: 0, observedMs: { submit: 10 } };
+  const first = { conversationId: sessionId, requestId: turnId }, retry = { conversationId: sessionId, requestId: "33333333-3333-4333-8333-333333333333" };
+  const seen = [], readyHookSessions = new Map();
+  const observe = nativeFunction("observeHookTiming", { activeHookTiming: current, appStartedAt: 1000,
+    Date: { now: () => 1020 }, userData: "/owned/app-data", env: { MEMORAX_CODE_HOME: "/owned/state" },
+    agent: { runs: [first, retry] }, readyHookSessions,
+    async collectCursorAppHookTiming(input) {
+      seen.push(input.turnId);
+      return projectCursorAppHookTiming({ readStatus: "present", currentLogFiles: 1, requiredUserHooksLoaded: true, sessionStartReady: true });
+    },
+    async collectCursorAppDiagnostics(input) { assert.equal(input.turnId, turnId); return { trace: { readStatus: "present", turnStartCount: 1 } }; },
+  });
+  const timing = await observe();
+  assert.deepEqual(seen, [turnId]);
+  assert.deepEqual(timing.observedMs, { sessionStartReady: 20, submit: 10, modelRequest: 20, turnStart: 20 });
+  assert.equal(timing.runIndex, 0);
+  const report = {};
+  const finish = nativeFunction("finishHookTiming", { activeHookTiming: current, report });
+  finish(); finish();
+  current.observedMs.submit = 999;
+  assert.equal(report.hookTimings.length, 1);
+  assert.equal(report.hookTimings[0].observedMs.submit, 10);
+  for (const value of [sessionId, turnId, "/owned"]) assert.equal(JSON.stringify(report).includes(value), false);
+});
+
+test("submission observation happens immediately before Enter and does not replay input", async () => {
+  const calls = [];
+  const submit = nativeFunction("submitPrompt", { markHookSubmit() { calls.push("mark"); },
+    page: {}, bounded: (promise) => promise });
+  await submit({ async fill() { calls.push("fill"); }, async press(key) { calls.push(key); } }, { prompt: "synthetic" });
+  assert.deepEqual(calls, ["fill", "mark", "Enter"]);
+});
+
+test("Windows process audit records each bounded result and cleanup cannot replace the earlier failure", async () => {
+  const report = { stage: "workspace-switch", errorCode: "PRIMARY_FAILURE" }, calls = [];
+  const first = { attempts: 2, timeoutCount: 2, finalStatus: "timeout" };
+  const next = { attempts: 1, timeoutCount: 0, finalStatus: "clear" };
+  const audit = nativeFunction("assertProcessesStopped", { report, process: { pid: 9 }, appPath: "/owned/app", packageRoot: "/owned/package",
+    env: { MEMORAX_CODE_HOME: "/owned/state" }, interruption: undefined,
+    windows: { projectWindowsProcessAuditDiagnostics: value => ({ ...value }),
+      async waitForWindowsProcessesExit(options) {
+        calls.push(options);
+        if (calls.length === 1) throw Object.assign(new Error("QUERY_TIMEOUT"), { code: "QUERY_TIMEOUT", windowsProcessAudit: first });
+        return next;
+      } },
+    ownedProcessesRemain() { assert.fail("must not nest the old Windows retry loop"); },
+  });
+  await assert.rejects(audit({ includeBackend: false }), { code: "QUERY_TIMEOUT" });
+  await audit({ stage: "cleanup" });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].includeBackend, false);
+  assert.equal(calls[1].includeBackend, true);
+  assert.equal(report.windowsProcessAudits.length, 2);
+  assert.equal(report.windowsProcessAudits[0].stage, "workspace-switch");
+  assert.equal(report.windowsProcessAudits[0].finalStatus, "timeout");
+  assert.equal(report.windowsProcessAudits[1].stage, "cleanup");
+  assert.equal(report.errorCode, "PRIMARY_FAILURE");
 });
