@@ -11,7 +11,7 @@ import { promisify } from "node:util";
 import { startCursorAgentMock } from "./cursor-app-mock-server.mjs";
 import { assertCursorAppNativeContent, assertCursorAppNativeSubagent, assertCursorAppWritebacks } from "./cursor-app-native-content-check.mjs";
 import { assertCursorAppSkillReference, assertCursorAppMemoryOperation } from "./cursor-app-memory-check.mjs";
-import { parseCursorRepoMemoryDelegation, parseCursorRepoMemoryClaim, assertCursorRepoMemoryRejected,
+import { readCursorRepoMemoryDelegation, projectCursorRepoMemoryDelegation, parseCursorRepoMemoryClaim, assertCursorRepoMemoryRejected,
   verifyCursorRepoMemoryFailure } from "./cursor-app-repo-memory-check.mjs";
 import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics,
   collectCursorAppBackendDiagnostics,
@@ -98,7 +98,7 @@ async function waitFor(predicate, code, timeoutMs = 30000) {
   check(false, code);
 }
 function beginHookTiming(phase, sessionId, { runIndex = null, resumedSession = false } = {}) {
-  if (process.platform !== "linux") return;
+  if (!["linux", "darwin"].includes(process.platform)) return;
   activeHookTiming = { phase, appLaunch, sessionId, runIndex, resumedSession,
     observedMs: { sessionStartReady: readyHookSessions.get(sessionId) ?? null } };
 }
@@ -135,7 +135,7 @@ function finishHookTiming() {
   activeHookTiming = undefined;
 }
 async function waitForHookReady(phase, sessionId) {
-  if (process.platform !== "linux") return;
+  if (!["linux", "darwin"].includes(process.platform)) return;
   beginHookTiming(phase, sessionId);
   report.stage = phase === "config" ? "hook-config-ready" : "hook-session-ready";
   try {
@@ -335,7 +335,7 @@ async function assertProcessesStopped(options = {}) {
   check(false, "CURSOR_APP_CLEANUP_DESCENDANTS");
 }
 async function startApp() {
-  if (process.platform === "linux") { appStartedAt = Date.now(); appLaunch += 1; readyHookSessions.clear(); }
+  if (["linux", "darwin"].includes(process.platform)) { appStartedAt = Date.now(); appLaunch += 1; readyHookSessions.clear(); }
   appLaunchLog = ""; appSpawnError = undefined; appDebugEndpointSeen = false;
   const endpoint = macos?.createDevToolsEndpointReader(debugPort);
   let endpointError;
@@ -598,10 +598,14 @@ function repoMemoryTools(run, results) {
       check(definitions[0].model === "inherit", "CURSOR_APP_REPO_MEMORY_DEFINITION_MODEL");
       check(definitions[0].isBackground === true, "CURSOR_APP_REPO_MEMORY_DEFINITION_BACKGROUND");
       check(definitions[0].prompt.trim() === repoMemoryDefinition.body, "CURSOR_APP_REPO_MEMORY_DEFINITION_PROMPT");
-      const context = [run.requestContext?.hooksAdditionalContext,
-        ...(run.userHookAdditionalContexts ?? []).map((item) => item.content)].filter(Boolean).join("\n");
-      repoMemory.request = parseCursorRepoMemoryDelegation(context, { executable: process.execPath,
-        helper: repoMemoryHelper, stateHome: env.MEMORAX_CODE_HOME, repo: workspace });
+      try {
+        repoMemory.request = readCursorRepoMemoryDelegation(run, { executable: process.execPath,
+          helper: repoMemoryHelper, stateHome: env.MEMORAX_CODE_HOME, repo: workspace });
+      } catch (error) {
+        repoMemory.failedRun ??= run;
+        report.repoMemoryDelegation ??= projectCursorRepoMemoryDelegation(error.repoMemoryDelegation);
+        throw error;
+      }
       return { kind: "task", subagentType: "memorax-repo-memory", prompt: repoMemory.request.delegation.prompt,
         description: "Validate the delegated Repo Memory job", model: "inherit", background: true };
     }
@@ -670,9 +674,11 @@ async function runRepoMemoryWorker() {
   turns.push({ sessionId, workspaceName: basename(workspace), scope: "repository-name.v1", ...repoMemoryFixture });
   const input = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`)
     .locator('[contenteditable="true"][role="textbox"]:visible');
+  beginHookTiming("turn", sessionId, { runIndex: repoMemory.runIndex });
   await submitPrompt(input, repoMemoryFixture);
   const approved = new Set(), opened = new Set();
   await waitFor(async () => {
+    await observeHookTiming();
     check(!agent.errors.length, agent.errors[0]);
     const parent = agent.runs[repoMemory.runIndex], child = agent.runs[repoMemory.runIndex + 1];
     if (child?.pendingTool?.kind === "shell" && !approved.has(child.pendingTool.toolCallId)) {
@@ -726,6 +732,7 @@ async function runRepoMemoryWorker() {
   await verifyCursorRepoMemoryFailure(repoMemory.claimed, { parentSessionId: sessionId, snapshotHead: fixture.head });
   await waitFor(() => memoryRequests.length >= turns.length + 2, "CURSOR_APP_REPO_MEMORY_WRITEBACK");
   assertWriteback();
+  finishHookTiming();
   report.evidence.repoMemoryWorker = true;
 }
 
@@ -888,7 +895,7 @@ try {
   if (app) report.appLaunch = collectCursorAppLaunchDiagnostics({ spawned: Boolean(app.pid),
     debugEndpointSeen: appDebugEndpointSeen, exitCode: app.exitCode, signal: app.signalCode,
     spawnError: appSpawnError, log: appLaunchLog });
-  const run = agent?.runs.at(-1);
+  const run = repoMemory?.failedRun ?? agent?.runs.at(-1);
   if (run) report.skillHookContext ??= collectCursorAppSkillHookContext({ run, runs: agent.runs });
   if (env && run) report.diagnostics = await collectCursorAppDiagnostics({ home: env.MEMORAX_CODE_HOME,
     sessionId: run.conversationId, turnId: run.requestId });

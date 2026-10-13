@@ -12,6 +12,7 @@ import { projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics,
   projectCursorAppShellDiagnostics, projectCursorAppStopDiagnostics, projectCursorAppWindowsStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 import { projectCursorAppHookDiagnostics, projectCursorAppHookTiming } from "./cursor-app-hook-diagnostics.mjs";
 import { projectCursorAppSkillHookContext } from "./cursor-app-hook-context.mjs";
+import { projectCursorRepoMemoryDelegation } from "./cursor-app-repo-memory-check.mjs";
 import { projectWindowsProcessAuditDiagnostics } from "./cursor-app-windows-runtime.mjs";
 
 const exec = promisify(execFile);
@@ -131,10 +132,11 @@ export function projectNativeReport(input, { expectedVersion = provenance.cursor
   if (input.memoryRequestCount !== undefined) report.memoryRequestCount = count(input.memoryRequestCount);
   if (input.diagnostics !== undefined) report.diagnostics = projectCursorAppDiagnostics(input.diagnostics);
   if (input.status === "FAIL" && input.nativeHooks !== undefined) report.nativeHooks = projectCursorAppHookDiagnostics(input.nativeHooks);
-  if (platform === "linux" && input.hookTimings !== undefined) {
+  if (["linux", "darwin"].includes(platform) && input.hookTimings !== undefined) {
     report.hookTimings = (Array.isArray(input.hookTimings) ? input.hookTimings.slice(0, 32) : []).map(projectCursorAppHookTiming);
   }
   if (input.status === "FAIL" && input.skillHookContext !== undefined) report.skillHookContext = projectCursorAppSkillHookContext(input.skillHookContext);
+  if (input.status === "FAIL" && input.repoMemoryDelegation !== undefined) report.repoMemoryDelegation = projectCursorRepoMemoryDelegation(input.repoMemoryDelegation);
   if (input.status === "FAIL" && input.backendDiagnostics !== undefined) report.backendDiagnostics = projectCursorAppBackendDiagnostics(input.backendDiagnostics);
   if (input.appLaunch !== undefined) report.appLaunch = projectCursorAppLaunchDiagnostics(input.appLaunch);
   if (input.status === "FAIL" && input.candidateStop !== undefined) report.candidateStop = projectCursorAppStopDiagnostics(input.candidateStop);

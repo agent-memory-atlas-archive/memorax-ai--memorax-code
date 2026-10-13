@@ -104,16 +104,18 @@ test("candidate commands drain stderr, bound output/time and preserve redacted s
 });
 
 test("failure collection reads existing diagnostics without replacing the original failure", async () => {
-  const body = source.split("  const run = agent?.runs.at(-1);")[1]?.split("\n}\nfinally {")[0];
+  const selector = "  const run = repoMemory?.failedRun ?? agent?.runs.at(-1);";
+  const body = selector + source.split(selector)[1]?.split("\n}\nfinally {")[0];
   assert.ok(body);
   const run = { conversationId: "11111111-1111-1111-1111-111111111111", requestId: "22222222-2222-2222-2222-222222222222" };
   const identity = { sessionId: run.conversationId, turnId: run.requestId };
-  for (const failed of [false, true]) for (const saved of [false, true]) {
+  for (const failed of [false, true]) for (const saved of [false, true]) for (const firstFailure of [false, true]) {
     const snapshot = saved ? collectCursorAppSkillHookContext({ run: { ...run,
       inputRequestContext: { hooksAdditionalContext: privateCanary } } }) : undefined;
     const report = { errorCode: "CURSOR_APP_ADD_TIMEOUT", ...(snapshot ? { skillHookContext: snapshot } : {}) };
     await runInNewContext(`(async () => {${body}})()`, { run, report,
-      agent: { runs: [run] }, collectCursorAppSkillHookContext,
+      agent: { runs: firstFailure ? [run, { conversationId: privateCanary, requestId: privateCanary }] : [run] },
+      repoMemory: firstFailure ? { failedRun: run } : undefined, collectCursorAppSkillHookContext,
       env: { MEMORAX_CODE_HOME: "/owned/state" }, userData: "/owned/app-data", collectCursorAppBackendDiagnostics,
       async collectCursorAppDiagnostics(input) { assert.deepEqual({ ...input }, { home: "/owned/state", ...identity }); return {}; },
       async collectCursorAppHookDiagnostics(input) { assert.deepEqual({ ...input }, { home: "/owned/app-data", ...identity }); return { readStatus: "absent" }; },
@@ -134,10 +136,12 @@ test("failure collection reads existing diagnostics without replacing the origin
 
 test("App launch preserves the sandbox and isolated arguments with a longer Windows driver deadline", async () => {
   for (const platform of ["linux", "darwin", "win32"]) {
-    const child = childProcess(), waits = [], argumentsSeen = [];
+    const child = childProcess(), waits = [], argumentsSeen = [], readiness = [];
+    const readyHookSessions = new Map([["old-session", 12]]);
     const page = { url: () => "file:///workbench.html", evaluate: async () => true, setDefaultTimeout() {} };
     const start = nativeFunction("startApp", {
-      process: { platform },
+      process: { platform }, readyHookSessions,
+      async waitForHookReady(phase) { readiness.push(phase); },
       macos: platform === "darwin" ? { createDevToolsEndpointReader: () => ({ push() {}, get: () => "ws://127.0.0.1:12346" }) } : undefined,
       windows: platform === "win32" ? {} : undefined,
       appPath: "/owned/app", userData: "/owned/app-data", root: "/owned", workspace: "/owned/workspace",
@@ -152,6 +156,8 @@ test("App launch preserves the sandbox and isolated arguments with a longer Wind
       },
     });
     await start();
+    assert.deepEqual(readiness, ["config"]);
+    assert.equal(readyHookSessions.size, platform === "win32" ? 1 : 0);
     assert.equal(argumentsSeen.includes("--force-disable-user-env"), platform !== "linux");
     assert.ok(argumentsSeen.includes("--use-inmemory-secretstorage"));
     assert.ok(argumentsSeen.includes("--test-backend-url=http://127.0.0.1:12345"));
@@ -481,10 +487,10 @@ test("preflight rejects unsupported runtimes, Linux root and unowned Windows run
   }
 });
 
-test("Linux readiness uses bounded independent gates and preserves failure before any submission", async () => {
-  for (const phase of ["config", "session"]) for (const ready of [false, true]) {
+test("Linux and macOS readiness use bounded independent gates and preserve failure before submission", async () => {
+  for (const platform of ["linux", "darwin"]) for (const phase of ["config", "session"]) for (const ready of [false, true]) {
     const calls = [], report = {};
-    const gate = nativeFunction("waitForHookReady", { process: { platform: "linux" }, report,
+    const gate = nativeFunction("waitForHookReady", { process: { platform }, report,
       beginHookTiming(value, id) { calls.push([value, id]); },
       async observeHookTiming() { return { requiredUserHooksLoaded: ready, sessionStartReady: phase === "session" && ready }; },
       async waitFor(predicate, code) { calls.push(code); check(await predicate(), code); },
@@ -497,8 +503,8 @@ test("Linux readiness uses bounded independent gates and preserves failure befor
     assert.equal(calls.at(-1), "snapshot");
     assert.deepEqual(calls[0], [phase, "session"]);
   }
-  for (const platform of ["darwin", "win32"]) {
-    await nativeFunction("waitForHookReady", { process: { platform }, beginHookTiming() { assert.fail("Linux-only gate"); } })("config");
+  for (const platform of ["win32"]) {
+    await nativeFunction("waitForHookReady", { process: { platform }, beginHookTiming() { assert.fail("unsupported readiness gate"); } })("config");
   }
 });
 
@@ -575,4 +581,22 @@ test("Windows process audit records each bounded result and cleanup cannot repla
   assert.equal(report.windowsProcessAudits[0].finalStatus, "timeout");
   assert.equal(report.windowsProcessAudits[1].stage, "cleanup");
   assert.equal(report.errorCode, "PRIMARY_FAILURE");
+});
+
+test("Repo Memory timing observes the first submission before reporting its original failure", async () => {
+  const body = source.split("async function runRepoMemoryWorker() {")[1]?.split("\ntry {")[0];
+  assert.ok(body);
+  const calls = [], agent = { runs: [], errors: [] }, report = { evidence: {} };
+  const failure = "CURSOR_APP_REPO_MEMORY_DELEGATION_INVALID";
+  const worker = runInNewContext("(async function () {" + body + ")", { check, basename, report, agent, turns: [], repoMemory: undefined,
+    async stopApp() {}, async assertProcessesStopped() {}, async prepareRepoMemoryWorkspace() { return { repo: "/owned/repo" }; },
+    async startApp() { calls.push("config-ready"); }, async openSession() { calls.push("session-ready"); return "parent-session"; },
+    page: { locator: () => ({ locator: () => ({}) }) }, repoMemoryFixture: { prompt: "synthetic" },
+    beginHookTiming(phase, sessionId, options) { calls.push([phase, sessionId, options.runIndex]); },
+    async submitPrompt() { calls.push("submit"); agent.runs.push({ requestId: "first" }, { requestId: "retry" }); agent.errors.push(failure); },
+    async observeHookTiming() { calls.push("observe"); },
+    async waitFor(predicate) { await predicate(); },
+  });
+  await assert.rejects(worker(), { code: failure });
+  assert.deepEqual(calls, ["config-ready", "session-ready", ["turn", "parent-session", 0], "submit", "observe"]);
 });
