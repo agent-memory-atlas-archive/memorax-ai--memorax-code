@@ -34,6 +34,41 @@ export function summarizeCleanupDiagnostic(error) {
   } catch { return undefined; }
 }
 
+function commandFailureDiagnostic(code, signal, stdout, stderr) {
+  const text = (stdout.slice(0, 65536) + "\n" + stderr.slice(0, 65536));
+  const markers = [
+    ["unknown-option", /unknown option|unrecognized (?:argument|option)|invalid option/i],
+    ["missing-module", /Cannot find module|ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND/i],
+    ["unsupported-platform", /unsupported (?:platform|architecture)|not supported on (?:this|your) (?:platform|operating system)/i],
+    ["model-configuration", /(?:model|provider)[^\n]{0,80}(?:not found|unknown|invalid|unavailable|not configured|not supported)|(?:unknown|invalid|unsupported) (?:model|provider)/i],
+    ["authentication", /authentication|unauthorized|not logged in|login required|invalid api key/i],
+    ["invalid-url", /ERR_INVALID_URL|Invalid URL/i],
+    ["connection-refused", /ECONNREFUSED|connection refused/i],
+    ["connection-reset", /ECONNRESET|connection reset/i],
+    ["network-timeout", /ETIMEDOUT|request timed out|connection timed out/i],
+    ["http-client-error", /(?:HTTP|status(?: code)?|response)[^\n]{0,12}4\d\d\b/i],
+    ["http-server-error", /(?:HTTP|status(?: code)?|response)[^\n]{0,12}5\d\d\b/i],
+    ["permission-denied", /EACCES|EPERM|permission denied|access is denied/i],
+    ["missing-file", /ENOENT|no such file or directory/i],
+    ["invalid-json", /SyntaxError|invalid JSON|Unexpected token/i],
+    ["missing-git-bash", /(?:git|bash)[^\n]{0,80}(?:not found|required|missing)/i],
+  ].filter(([, pattern]) => pattern.test(text)).map(([name]) => name);
+  const result = { stdoutBytes: Buffer.byteLength(stdout), stderrBytes: Buffer.byteLength(stderr),
+    inspectedOutputTruncated: stdout.length > 65536 || stderr.length > 65536, markers };
+  if (Number.isInteger(code) && code >= -2147483648 && code <= 4294967295) result.exitCode = code;
+  if (["SIGABRT", "SIGBUS", "SIGFPE", "SIGILL", "SIGINT", "SIGKILL", "SIGSEGV", "SIGTERM"].includes(signal)) result.signal = signal;
+  const events = {};
+  for (const line of stdout.slice(0, 65536).split(/\r?\n/).slice(0, 128)) {
+    try {
+      const event = JSON.parse(line);
+      if (["system", "assistant", "user", "result", "error"].includes(event?.type)) events[event.type] = (events[event.type] ?? 0) + 1;
+      if (event?.type === "result" && typeof event.is_error === "boolean") result.resultIsError = event.is_error;
+    } catch { /* Unstructured output is never included in the report. */ }
+  }
+  result.events = events;
+  return result;
+}
+
 export async function createNativeHarness({ packageRoot, codebuddyCommand, client = "codebuddy", label = "native", writeback = true, expectedVersion }) {
   check(client === "codebuddy" || client === "workbuddy", "NATIVE_CLIENT_INVALID");
   const otherClients = clients.filter((candidate) => candidate !== client);
@@ -129,9 +164,10 @@ export async function createNativeHarness({ packageRoot, codebuddyCommand, clien
         });
       }
       child.once("error", reject);
-      child.once("close", (code) => {
+      child.once("close", (code, signal) => {
         if (code === 0) done(output);
-        else reject(Object.assign(new Error("NATIVE_COMMAND_FAILED"), { code, nativeCode: "NATIVE_COMMAND_FAILED" }));
+        else reject(Object.assign(new Error("NATIVE_COMMAND_FAILED"), { code, nativeCode: "NATIVE_COMMAND_FAILED",
+          commandDiagnostic: commandFailureDiagnostic(code, signal, output.stdout, output.stderr) }));
       });
       timer = setTimeout(() => reject(Object.assign(new Error("NATIVE_COMMAND_TIMEOUT"),
         { nativeCode: "NATIVE_COMMAND_TIMEOUT" })), options.timeout ?? 90_000);
@@ -140,6 +176,8 @@ export async function createNativeHarness({ packageRoot, codebuddyCommand, clien
     child.stdin.end(options.input ?? "");
     try { return await pending; }
     catch (error) {
+      if (error.commandDiagnostic) console.error(JSON.stringify({ suite: `${client}_native_command`, status: "FAIL",
+        command: command === codebuddyCommand ? "native-client" : "product-cli", ...error.commandDiagnostic }));
       stopping = stopTree(child, childEnv);
       error.nativeCode ??= "NATIVE_COMMAND_FAILED";
       throw error;

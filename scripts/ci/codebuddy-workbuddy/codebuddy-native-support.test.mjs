@@ -721,6 +721,37 @@ test("command runner preserves stdin and split UTF-8 stdout and stderr", async (
   assert.equal(result.stderr, input);
 });
 
+test("nonzero command diagnostics retain only bounded classifications, counts, and exit status", async (t) => {
+  const harness = await createHarness(t);
+  const privateText = "private-diagnostic-canary /Users/private/session C:\\private\\session Bearer secret-value";
+  const stdout = JSON.stringify({ type: "result", is_error: true, result: privateText,
+    subtype: "private-result-subtype" }) + "\n";
+  const stderr = "Error: unknown option --private-option " + privateText + "\n";
+  await assert.rejects(harness.runCodeBuddy(["-e", `
+    process.stdout.write(${JSON.stringify(stdout)});
+    process.stderr.write(${JSON.stringify(stderr)});
+    process.exitCode = 7;
+  `]), (error) => {
+    assert.equal(error.nativeCode, "NATIVE_COMMAND_FAILED");
+    assert.deepEqual(error.commandDiagnostic, { stdoutBytes: Buffer.byteLength(stdout), stderrBytes: Buffer.byteLength(stderr),
+      inspectedOutputTruncated: false, markers: ["unknown-option"], exitCode: 7, resultIsError: true, events: { result: 1 } });
+    assert.doesNotMatch(JSON.stringify(error), /private|Bearer|secret-value/);
+    return true;
+  });
+  await assert.rejects(harness.runCodeBuddy(["-e", `
+    process.stdout.write("x".repeat(65537));
+    process.stderr.write("x".repeat(65537) + "ECONNREFUSED private-diagnostic-canary");
+    process.exitCode = 9;
+  `]), (error) => {
+    assert.equal(error.commandDiagnostic.exitCode, 9);
+    assert.equal(error.commandDiagnostic.inspectedOutputTruncated, true);
+    assert.deepEqual(error.commandDiagnostic.markers, []);
+    assert.deepEqual(error.commandDiagnostic.events, {});
+    assert.ok(JSON.stringify(error.commandDiagnostic).length < 512);
+    return true;
+  });
+});
+
 for (const [name, source, code, timeout] of [
   ["timeout", "setTimeout(() => {}, 60000);", "NATIVE_COMMAND_TIMEOUT", 1000],
   ["output", 'process.stdout.write("x".repeat(17 * 1024 * 1024)); setTimeout(() => {}, 60000);', "NATIVE_OUTPUT_LIMIT", 5000],

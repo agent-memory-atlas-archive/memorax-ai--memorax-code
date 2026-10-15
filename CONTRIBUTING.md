@@ -997,8 +997,11 @@ downloads are diagnostic evidence, not authenticated release artifacts. A Linux
 hash warning permits only the isolated functional checks after all remaining
 validation passes. Response reports omit raw headers and signed URL queries.
 
-Latest discovery uses each platform's official update feed. The macOS ZIP URL
-is converted to the DMG URL in the same manner as the official download page.
+Latest discovery uses each platform's official update feed. macOS preserves the
+feed URL and its matching checksum: latest ZIP archives are extracted into the
+private runner directory, while pinned DMG images remain mounted read-only.
+Both paths require the application's Tencent signature, Apple notarization
+assessment, product version, and bundled runtime validation before execution.
 When the Windows feed has an empty checksum, the resolver freezes one commit
 of Microsoft's `winget-pkgs` repository and reads the matching WorkBuddy
 installer manifest from that immutable revision. It requires a unique x64/user
@@ -1025,7 +1028,7 @@ known pin, or failed acquisition also fails; the resolver does not
 continue trying progressively older versions.
 
 The macOS runner also requires Apple's notarization assessment and Tencent's
-Developer ID signature before using the read-only mounted application. Linux
+Developer ID signature before using the mounted or extracted application. Linux
 uses `dpkg-deb -x`, without installing the desktop package or running its
 maintainer scripts. Windows verifies the installer's Authenticode signature and
 publisher before extracting its payload with 7-Zip, without executing the
@@ -1174,8 +1177,11 @@ memorax_dev node scripts/ci/codebuddy-workbuddy/codebuddy-permissions-check.mjs 
 ```
 
 All suites use fresh client and Backend state, synthetic credentials, and
-loopback model/Memory services. Reports contain bounded diagnostics, not raw
-transcripts, credentials or private paths. Cleanup must succeed before a suite
+loopback model/Memory services. Nonzero native commands report their exit status,
+output sizes, recognized error categories, and selected event counts; raw output
+and unknown text remain omitted. Setup-interruption failures also retain bounded
+receiver counts and route classifications. Reports contain bounded diagnostics,
+not raw transcripts, credentials or private paths. Cleanup must succeed before a suite
 can pass, and unverified cleanup retains its isolated state.
 
 Desktop-managed task directories, desktop startup environments, and login remain
