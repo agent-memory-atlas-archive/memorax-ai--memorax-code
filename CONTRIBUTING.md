@@ -1063,8 +1063,15 @@ for Windows. The supplied bundle is read-only; only MemoraX Code and test-only
 package is installed for WorkBuddy. The wrapper validates the bundled path
 before installation, and the suites verify the exact runtime version and
 WorkBuddy plugin metadata. CodeBuddy's existing invocation and full suite remain
-unchanged. WorkBuddy must independently pass each suite using its own client
-identity and bundled runtime; CodeBuddy results are not substitutes.
+unchanged. When the verified WorkBuddy bundle contains `dist/codebuddy-lite-wb.mjs`,
+the isolated test environment sets `CODEBUDDY_FORCE_LITE_WB_BUNDLE=1`, matching
+the official desktop host. Recent bundles omit the generic headless/TUI entrypoints;
+the public `bin/codebuddy` launcher must select the shipped lite runtime. Older
+bundles without that file keep their existing invocation. This selection is
+derived from the chosen WorkBuddy package, never inherited from the developer
+environment, and remains available to native worker children. CodeBuddy is unchanged.
+WorkBuddy must independently pass each suite using its own client identity and
+bundled runtime; CodeBuddy results are not substitutes.
 
 The shared lifecycle cases cover rejected stdin, real-terminal cancellation and
 hidden credentials, fresh/repeated setup, port-conflict recovery, stop/start,

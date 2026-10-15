@@ -74,6 +74,9 @@ export async function createNativeHarness({ packageRoot, codebuddyCommand, clien
   const otherClients = clients.filter((candidate) => candidate !== client);
   packageRoot = resolve(packageRoot);
   codebuddyCommand = resolve(codebuddyCommand);
+  const workbuddyLiteBundle = client === "workbuddy"
+    && await stat(resolve(dirname(codebuddyCommand), "../dist/codebuddy-lite-wb.mjs"))
+      .then((info) => info.isFile(), (error) => { if (error.code === "ENOENT") return false; throw error; });
   const { resolveWindowsCliInvocation } = await import(pathToFileURL(join(packageRoot, "lib", "windows-cli-invocation.mjs")));
   const root = await mkdtemp(join(tmpdir(), `memorax-${client}-${label}-`));
   const home = join(root, "user home");
@@ -118,7 +121,7 @@ export async function createNativeHarness({ packageRoot, codebuddyCommand, clien
     }, serverErrors);
     backendPort = await freePort();
     env = isolatedEnv({ root, home, stateHome, codebuddyHome, codebuddyCommand, client, otherClients, packageRoot, backendPort,
-      modelUrl: modelServer.url, memoryUrl: memoryServer.url, writeback });
+      modelUrl: modelServer.url, memoryUrl: memoryServer.url, writeback, workbuddyLiteBundle });
     if (process.platform === "win32") {
       const gitBash = join(process.env.ProgramFiles ?? "C:\\Program Files", "Git", "bin", "bash.exe");
       check(await stat(gitBash).then((info) => info.isFile(), () => false), "NATIVE_WINDOWS_GIT_BASH_MISSING");
@@ -444,7 +447,7 @@ async function freePort() {
   await new Promise((done) => server.close(done));
   return port;
 }
-function isolatedEnv({ root, home, stateHome, codebuddyHome, codebuddyCommand, client, otherClients, packageRoot, backendPort, modelUrl, memoryUrl, writeback }) {
+function isolatedEnv({ root, home, stateHome, codebuddyHome, codebuddyCommand, client, otherClients, packageRoot, backendPort, modelUrl, memoryUrl, writeback, workbuddyLiteBundle }) {
   const windowsRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
   const systemPaths = process.platform === "win32" ? [join(windowsRoot, "System32"), windowsRoot,
     join(windowsRoot, "System32", "Wbem"), join(windowsRoot, "System32", "WindowsPowerShell", "v1.0")]
@@ -479,7 +482,11 @@ function isolatedEnv({ root, home, stateHome, codebuddyHome, codebuddyCommand, c
     WORKBUDDY_HOME: join(home, ".workbuddy"),
     TRAE_HOME: join(home, ".trae-cn"), TRAE_CN_HOME: join(home, ".trae-cn"), CURSOR_HOME: join(home, ".cursor"),
   };
-  if (client === "workbuddy") env.WORKBUDDY_CONFIG_DIR = codebuddyHome;
+  if (client === "workbuddy") {
+    env.WORKBUDDY_CONFIG_DIR = codebuddyHome;
+    // Match the official desktop host when its bundle ships the lite runtime.
+    if (workbuddyLiteBundle) env.CODEBUDDY_FORCE_LITE_WB_BUNDLE = "1";
+  }
   if (process.platform === "win32") Object.assign(env, { SystemRoot: windowsRoot, WINDIR: windowsRoot,
     ComSpec: join(windowsRoot, "System32", "cmd.exe"), PATHEXT: ".COM;.EXE;.BAT;.CMD", USERNAME: "native-fixture" });
   for (const client of otherClients) {
