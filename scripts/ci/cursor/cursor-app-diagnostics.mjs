@@ -46,6 +46,31 @@ const launchMarkers = {
   permissionDenied: /Operation not permitted|Permission denied|\bEACCES\b|\bEPERM\b/,
 };
 
+export function projectCursorAppSubmissionDiagnostics(value) {
+  const boundedCount = (number) => Number.isSafeInteger(number) && number >= 0 && number <= 64 ? number : null;
+  const optionalBoolean = (boolean) => typeof boolean === "boolean" ? boolean : null;
+  return {
+    phase: enumValue(value?.phase, ["fill", "type-skill", "select-skill", "verify-skill", "move-to-end", "insert-text", "enter", "other"], "other"),
+    failureKind: enumValue(value?.failureKind, ["timeout", "ambiguous", "detached", "not-editable", "other"], "other"),
+    readStatus: enumValue(value?.readStatus, ["present", "unavailable", "other"], "unavailable"),
+    composerCount: boundedCount(value?.composerCount), inputCount: boundedCount(value?.inputCount),
+    primaryInputCount: boundedCount(value?.primaryInputCount), editingInputCount: boundedCount(value?.editingInputCount),
+    composerStatus: value?.composerStatus == null ? "absent"
+      : enumValue(value.composerStatus, ["completed", "cancelled", "absent", "other"]),
+    editable: optionalBoolean(value?.editable), selectedSessionMatches: optionalBoolean(value?.selectedSessionMatches),
+  };
+}
+
+export function collectCursorAppSubmissionDiagnostics(value) {
+  const message = typeof value?.error?.message === "string" ? value.error.message.slice(0, 8192) : "";
+  const failureKind = /strict mode violation/i.test(message) ? "ambiguous"
+    : /element (?:was |is )?detached|not attached to the DOM/i.test(message) ? "detached"
+    : /element is not editable|not an <input>, <textarea> or \[contenteditable\] element/i.test(message) ? "not-editable"
+    : value?.error?.name === "TimeoutError" || /\bTimeout \d+ms exceeded\b/.test(message)
+      || ["CURSOR_APP_SKILL_MENU", "CURSOR_APP_SKILL_MENTION"].includes(value?.error?.code) ? "timeout" : "other";
+  return projectCursorAppSubmissionDiagnostics({ ...value, failureKind });
+}
+
 export function projectCursorAppLaunchDiagnostics(value) {
   return {
     spawned: value?.spawned === true, debugEndpointSeen: value?.debugEndpointSeen === true,
