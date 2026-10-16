@@ -14,7 +14,7 @@ import { assertCursorAppSkillReference, assertCursorAppMemoryOperation } from ".
 import { readCursorRepoMemoryDelegation, projectCursorRepoMemoryDelegation, parseCursorRepoMemoryClaim, assertCursorRepoMemoryRejected,
   verifyCursorRepoMemoryFailure } from "./cursor-app-repo-memory-check.mjs";
 import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics,
-  collectCursorAppBackendDiagnostics,
+  collectCursorAppBackendDiagnostics, collectCursorAppSubmissionDiagnostics,
   collectCursorAppShellDiagnostics, collectCursorAppShellOutputDiagnostics,
   projectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 import { collectCursorAppHookDiagnostics, collectCursorAppHookTiming, projectCursorAppHookTiming } from "./cursor-app-hook-diagnostics.mjs";
@@ -404,23 +404,56 @@ function assertSnapshot(sessionId) {
     sessionId, generationId: latest.requestId, conversationStateBytes: latest.conversationStateBytes,
     kvWrites: sessionRuns.flatMap((run) => run.kvWrites) });
 }
-async function submitPrompt(input, fixture) {
-  if (fixture.operation) {
-    await input.fill("");
-    await input.pressSequentially("/memorax-code");
-    const item = page.locator(".ui-slash-menu__content:visible")
-      .locator(".ui-slash-menu__item-title").filter({ hasText: /^\/memorax-code$/ });
-    await waitFor(async () => await item.count() === 1, "CURSOR_APP_SKILL_MENU");
-    await item.click();
-    const mention = input.locator('[data-typeahead-type="cursor_skill"][data-mention-name="memorax-code"]');
-    await waitFor(async () => await mention.count() === 1, "CURSOR_APP_SKILL_MENTION");
-    await input.press("End");
-    await page.keyboard.insertText(fixture.prompt.slice("/memorax-code ".length));
-  } else {
-    await input.fill(fixture.prompt);
+async function recordSubmissionFailure({ composer, input, sessionId, phase, error }) {
+  if (report.nativeSubmit) return;
+  report.nativeSubmit = collectCursorAppSubmissionDiagnostics({ phase, error });
+  try {
+    const snapshot = await bounded((async () => {
+      const [composerCount, inputCount, primaryInputCount, editingInputCount, selectedSessionMatches] = await Promise.all([
+        composer.count(), input.count(), composer.locator('.aislash-editor-input[contenteditable="true"][role="textbox"]:visible').count(),
+        composer.locator('.ui-prompt-input-editor__input[contenteditable="true"][role="textbox"]:visible').count(), page.evaluate(async (id) => {
+          const selected = (await window.driver.executeCommand("workbench.action.devGetComposerDataForTesting"))?.composerId;
+          return typeof selected === "string" ? selected === id : null;
+        }, sessionId),
+      ]);
+      const [composerStatus, editable] = await Promise.all([
+        composerCount === 1 ? composer.getAttribute("data-composer-status") : null,
+        inputCount === 1 ? input.isEditable() : null,
+      ]);
+      return { composerCount, inputCount, primaryInputCount, editingInputCount, selectedSessionMatches, composerStatus, editable };
+    })(), "CURSOR_APP_SUBMIT_DIAGNOSTICS_TIMEOUT", 1000);
+    report.nativeSubmit = collectCursorAppSubmissionDiagnostics({ phase, error, ...snapshot, readStatus: "present" });
+  } catch {}
+}
+async function submitPrompt(input, fixture, context = {}) {
+  let phase = "fill";
+  try {
+    if (fixture.operation) {
+      await input.fill("");
+      phase = "type-skill";
+      await input.pressSequentially("/memorax-code");
+      const item = page.locator(".ui-slash-menu__content:visible")
+        .locator(".ui-slash-menu__item-title").filter({ hasText: /^\/memorax-code$/ });
+      phase = "select-skill";
+      await waitFor(async () => await item.count() === 1, "CURSOR_APP_SKILL_MENU");
+      await item.click();
+      const mention = input.locator('[data-typeahead-type="cursor_skill"][data-mention-name="memorax-code"]');
+      phase = "verify-skill";
+      await waitFor(async () => await mention.count() === 1, "CURSOR_APP_SKILL_MENTION");
+      phase = "move-to-end";
+      await input.press("End");
+      phase = "insert-text";
+      await page.keyboard.insertText(fixture.prompt.slice("/memorax-code ".length));
+    } else {
+      await input.fill(fixture.prompt);
+    }
+    phase = "enter";
+    markHookSubmit();
+    await input.press("Enter");
+  } catch (error) {
+    try { await recordSubmissionFailure({ ...context, input, phase, error }); } catch {}
+    throw error;
   }
-  markHookSubmit();
-  await input.press("Enter");
 }
 async function runTurn(sessionId, fixture = fixtures[turns.length]) {
   const index = agent.runs.length;
@@ -428,9 +461,10 @@ async function runTurn(sessionId, fixture = fixtures[turns.length]) {
   const decidedTools = new Set();
   turns.push({ sessionId, workspaceName: basename(workspace), ...fixture });
   report.stage = "native-submit";
-  const input = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`)
-    .locator('[contenteditable="true"][role="textbox"]:visible');
-  await submitPrompt(input, fixture);
+  const composer = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`);
+  // Cancellation can open an inline editor; new turns must use the primary input in the same composer.
+  const input = composer.locator('.aislash-editor-input[contenteditable="true"][role="textbox"]:visible');
+  await submitPrompt(input, fixture, { composer, sessionId });
   report.stage = "agent-transport";
   await waitFor(async () => {
     await observeHookTiming();
@@ -547,7 +581,7 @@ async function interruptPendingShell() {
   interruption = { sessionId, runIndex: agent.runs.length, marker: join(workspace, "cancelled-shell-marker") };
   report.stage = "pending-shell-interruption";
   const composer = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`);
-  const input = composer.locator('[contenteditable="true"][role="textbox"]:visible');
+  const input = composer.locator('.aislash-editor-input[contenteditable="true"][role="textbox"]:visible');
   await input.fill(interruptedFixture.prompt); await input.press("Enter");
   let run, stop;
   await waitFor(async () => {
@@ -672,10 +706,10 @@ async function runRepoMemoryWorker() {
   repoMemory = { ...fixture, sessionId, runIndex: agent.runs.length };
   report.stage = "repo-memory-worker";
   turns.push({ sessionId, workspaceName: basename(workspace), scope: "repository-name.v1", ...repoMemoryFixture });
-  const input = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`)
-    .locator('[contenteditable="true"][role="textbox"]:visible');
+  const composer = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`);
+  const input = composer.locator('.aislash-editor-input[contenteditable="true"][role="textbox"]:visible');
   beginHookTiming("turn", sessionId, { runIndex: repoMemory.runIndex });
-  await submitPrompt(input, repoMemoryFixture);
+  await submitPrompt(input, repoMemoryFixture, { composer, sessionId });
   const approved = new Set(), opened = new Set();
   await waitFor(async () => {
     await observeHookTiming();

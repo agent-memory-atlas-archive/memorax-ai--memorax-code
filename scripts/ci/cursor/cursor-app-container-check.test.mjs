@@ -508,3 +508,28 @@ test("cleanup refuses ambiguous ownership and preserves failure even when later 
   }), /CURSOR_CONTAINER_CLEANUP/);
   assert.equal(removals, 1);
 });
+
+
+test("native submission failure reports allow only bounded input diagnostics and never alter PASS requirements", () => {
+  for (const platform of ["linux", "darwin", "win32"]) {
+    const nativeSubmit = { phase: "fill", failureKind: "ambiguous", readStatus: "present", composerCount: 1,
+      inputCount: 2, primaryInputCount: 1, editingInputCount: 1, composerStatus: "cancelled", editable: null,
+      selectedSessionMatches: true };
+    const input = { ...nativeReport(), platform, status: "FAIL", stage: "native-submit", nativeSubmit: { ...nativeSubmit,
+      error: "private-canary", sessionId: "private-canary", path: "private-canary", dom: "private-canary" } };
+    assert.deepEqual(projectNativeReport(input, { platform }).nativeSubmit, nativeSubmit);
+    input.nativeSubmit = { phase: "private-canary", failureKind: "private-canary", readStatus: "private-canary", composerCount: 65,
+      inputCount: -1, primaryInputCount: "1", editingInputCount: Infinity, composerStatus: "private-canary", editable: "true",
+      selectedSessionMatches: "private-canary", error: "private-canary" };
+    const value = projectNativeReport(input, { platform }).nativeSubmit;
+    assert.deepEqual(value, { phase: "other", failureKind: "other", readStatus: "other", composerCount: null,
+      inputCount: null, primaryInputCount: null, editingInputCount: null, composerStatus: "other", editable: null,
+      selectedSessionMatches: null });
+    assert.equal(JSON.stringify(value).includes("private-canary"), false);
+    input.status = "PASS";
+    input.stage = "complete";
+    assert.equal(projectNativeReport(input, { platform }).nativeSubmit, undefined);
+    input.evidence.sameSessionRecovered = false;
+    assert.throws(() => projectNativeReport(input, { platform }), /CURSOR_CONTAINER_REPORT/);
+  }
+});

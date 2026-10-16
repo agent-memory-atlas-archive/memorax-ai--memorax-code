@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, collectCursorAppShellDiagnostics,
   collectCursorAppBackendDiagnostics, projectCursorAppBackendDiagnostics,
+  collectCursorAppSubmissionDiagnostics, projectCursorAppSubmissionDiagnostics,
   collectCursorAppShellOutputDiagnostics, collectCursorAppStopDiagnostics, collectCursorAppWindowsStopDiagnostics,
   projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics, projectCursorAppShellDiagnostics,
   projectCursorAppStopDiagnostics, projectCursorAppWindowsStopDiagnostics } from "./cursor-app-diagnostics.mjs";
@@ -326,4 +327,48 @@ test("turn report projection discards arbitrary fields and invalid counters", ()
   assert.deepEqual(value.trace, { readStatus: "present", eventCount: 9, turnStartCount: 0,
     completedCount: 0, interruptedCount: 0, materializedCount: 0 });
   redacted(value);
+});
+
+
+test("submission diagnostics classify bounded Playwright failures without exposing their content", () => {
+  for (const [message, name, code, failureKind] of [
+    ["locator.fill: Timeout 10000ms exceeded.", "TimeoutError", undefined, "timeout"],
+    ["locator.fill: Error: strict mode violation: locator resolved to 2 elements", "Error", undefined, "ambiguous"],
+    ["locator.press: Element is not attached to the DOM", "Error", undefined, "detached"],
+    ["locator.fill: Timeout 10000ms exceeded; element was detached", "TimeoutError", undefined, "detached"],
+    ["locator.fill: Element is not editable", "Error", undefined, "not-editable"],
+    ["locator.fill: Error: Element is not an <input>, <textarea> or [contenteditable] element", "Error", undefined, "not-editable"],
+    ["", "Error", "CURSOR_APP_SKILL_MENU", "timeout"],
+    ["", "Error", "CURSOR_APP_SKILL_MENTION", "timeout"],
+    [privateCanary, "Error", privateCanary, "other"],
+    ["x".repeat(8192) + " strict mode violation", "Error", undefined, "other"],
+  ]) {
+    const value = collectCursorAppSubmissionDiagnostics({ phase: "fill", error: { name, code, message: message + privateCanary },
+      readStatus: "present", composerCount: 1, inputCount: 2, primaryInputCount: 1, editingInputCount: 1,
+      composerStatus: "cancelled", selectedSessionMatches: true, editable: null, raw: privateCanary });
+    assert.equal(value.failureKind, failureKind);
+    assert.equal(value.phase, "fill");
+    assert.equal(value.inputCount, 2);
+    assert.equal(value.editable, null);
+    assert.deepEqual(projectCursorAppSubmissionDiagnostics(value), value);
+    redacted(value);
+  }
+});
+
+test("submission projections preserve only bounded counts, literal booleans and known states", () => {
+  const valid = { phase: "enter", failureKind: "not-editable", readStatus: "present", composerCount: 0,
+    inputCount: 64, primaryInputCount: 1, editingInputCount: 0, composerStatus: "completed", editable: false,
+    selectedSessionMatches: false };
+  assert.deepEqual(projectCursorAppSubmissionDiagnostics({ ...valid, sessionId: privateCanary, error: privateCanary }), valid);
+  for (const invalid of [-1, 65, 1.5, NaN, Infinity, "1", true, {}, null, undefined]) {
+    const value = projectCursorAppSubmissionDiagnostics({ phase: privateCanary, failureKind: privateCanary,
+      readStatus: privateCanary, composerCount: invalid, inputCount: invalid, primaryInputCount: invalid,
+      editingInputCount: invalid, composerStatus: privateCanary, editable: privateCanary, selectedSessionMatches: privateCanary });
+    assert.deepEqual(value, { phase: "other", failureKind: "other", readStatus: "other", composerCount: null,
+      inputCount: null, primaryInputCount: null, editingInputCount: null, composerStatus: "other", editable: null,
+      selectedSessionMatches: null });
+    redacted(value);
+  }
+  assert.equal(collectCursorAppSubmissionDiagnostics({ error: privateCanary }).failureKind, "other");
+  assert.equal(projectCursorAppSubmissionDiagnostics().readStatus, "unavailable");
 });

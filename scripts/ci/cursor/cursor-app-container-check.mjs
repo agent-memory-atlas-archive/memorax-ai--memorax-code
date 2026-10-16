@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { baselineRelease, validateLinuxRelease } from "./cursor-app-release.mjs";
 import { projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics,
-  projectCursorAppBackendDiagnostics,
+  projectCursorAppBackendDiagnostics, projectCursorAppSubmissionDiagnostics,
   projectCursorAppShellDiagnostics, projectCursorAppStopDiagnostics, projectCursorAppWindowsStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 import { projectCursorAppHookDiagnostics, projectCursorAppHookTiming } from "./cursor-app-hook-diagnostics.mjs";
 import { projectCursorAppSkillHookContext } from "./cursor-app-hook-context.mjs";
@@ -132,6 +132,7 @@ export function projectNativeReport(input, { expectedVersion = provenance.cursor
   if (input.memoryRequestCount !== undefined) report.memoryRequestCount = count(input.memoryRequestCount);
   if (input.diagnostics !== undefined) report.diagnostics = projectCursorAppDiagnostics(input.diagnostics);
   if (input.status === "FAIL" && input.nativeHooks !== undefined) report.nativeHooks = projectCursorAppHookDiagnostics(input.nativeHooks);
+  if (input.status === "FAIL" && input.nativeSubmit !== undefined) report.nativeSubmit = projectCursorAppSubmissionDiagnostics(input.nativeSubmit);
   if (["linux", "darwin"].includes(platform) && input.hookTimings !== undefined) {
     report.hookTimings = (Array.isArray(input.hookTimings) ? input.hookTimings.slice(0, 32) : []).map(projectCursorAppHookTiming);
   }
