@@ -443,7 +443,12 @@ The DSH adapter installs content-addressed runtime generations from immutable
 staged source into managed Profiles through DSH's native plugin manager. It
 never installs or updates DSH or deletes user Profiles. The validated DSH
 entrypoint and version form durable runtime authority and are revalidated
-during reconciliation. The Backend lifecycle lock precedes the DSH state lock.
+during reconciliation. Reserved Desktop Profiles use the Desktop installation's
+native launcher and bundled package manager; ordinary Profiles retain the CLI
+launcher. The Desktop launcher and version are separately pinned in the private
+state and runtime-generation metadata when that Profile is managed. The adapter
+never enables reserved-profile access through an npm CLI or edits native package
+manager state directly. The Backend lifecycle lock precedes the DSH state lock.
 Start quiesces old authority, prepares artifacts while disabled, and activates
 them only after Backend readiness; stop, update, and uninstall disable
 authority before Profile mutation. Disabled or invalid runtime registers no

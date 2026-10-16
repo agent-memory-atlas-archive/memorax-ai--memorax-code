@@ -331,12 +331,53 @@ redact output, and explain any relevant checks not run. Public fixtures must nev
 real API keys, private transcripts, personal memory, or infrastructure
 credentials.
 
+### DSH Native Compatibility Checks
+
+The DSH adapter and Backend suites cover legacy Session formats and v4,
+producer-owned context sources, resume reconciliation, compaction, and CLI versus
+Desktop Profile management. Native lifecycle fixtures simulate launcher discovery
+and version drift; they do not establish Desktop GUI behavior.
+
+`MEMORAX_CODE_DSH_E2E=1 make test-dsh-e2e` runs the installed npm artifact against
+the pinned DSH release using isolated client and Backend homes, synthetic
+credentials, and local model and MemoraX services. Set
+`MEMORAX_CODE_DSH_E2E_VERSION` to an exact release when checking another version,
+and `MEMORAX_CODE_DSH_E2E_MEMORAX_TARBALL` to reuse a validated artifact.
+`MEMORAX_CODE_DSH_E2E_RUNTIME_PREFIX` may point to a separately prepared test npm
+prefix containing that exact DSH and mock-server version plus the pinned pnpm;
+only these runtime packages are reused, while all client and Backend state stays
+isolated. The runner
+checks native Turn writeback, excluded context and reasoning, interruption and
+resume, Backend recovery, Profile reconciliation, and stop/uninstall preservation.
+Failed runs retain their isolated directory and redacted process logs for diagnosis;
+successful runs remove it. Review retained artifacts before sharing them.
+Optional Office packages are omitted; this check does not qualify those features
+or the Desktop window. A failed newer-release check must not be reported as a pass
+based only on the older-version tests or adapter status.
+
+On macOS, check an official Desktop installation or read-only mounted distribution:
+
+```bash
+node scripts/ci/dsh/dsh-desktop-native-check.mjs \
+  --desktop-command "/path/to/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" \
+  --tarball "/path/to/memorax-code.tgz"
+```
+
+The runner creates isolated homes, initializes the reserved
+`desktop` Profile through the bundled runtime, installs and removes the plugin
+with the native launcher, and completes a v4 Turn using Electron and local mock
+services. It verifies clean QA writeback and stops the Backend during cleanup.
+Model execution is restricted to loopback connections. Use `--artifacts-dir` for
+an output directory outside the repository; review and redact local diagnostics
+before sharing. This check exercises the Desktop host runtime, not GUI interaction
+or native Windows behavior.
+
 ### Native CI Script Layout
 
 Native-client runners, helpers, and their adjacent tests are grouped under
 `scripts/ci/`:
 
-- `codex/`, `claude/`, `opencode/`, and `cursor/` own each client's checks.
+- `codex/`, `claude/`, `dsh/`, `opencode/`, and `cursor/` own each client's checks.
 - `codebuddy-workbuddy/` owns both clients' entrypoints and shared checks.
 - `shared/` owns cross-client cleanup tests and Windows user PATH utilities.
 
