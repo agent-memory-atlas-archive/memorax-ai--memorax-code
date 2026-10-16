@@ -1118,10 +1118,7 @@ function dshAdapterStatusLine(report: AdapterReport): string {
     return `unavailable ${report.reason ?? "not-detected"}`;
   }
   const version = report.version ?? report.dshVersion;
-  const tested = version && report.dshVersionTested !== undefined
-    ? ` version=${version} tested=${report.dshVersionTested}`
-    : "";
-  return `${adapterStatusLine(report)}${tested}`;
+  return `${adapterStatusLine(report)}${version ? ` version=${version}` : ""}`;
 }
 
 function argValue(argv: string[], name: string): string | undefined {

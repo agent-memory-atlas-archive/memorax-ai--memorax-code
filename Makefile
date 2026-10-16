@@ -59,7 +59,7 @@ test-opencode-e2e: npm-package-check
 
 test-npm-package:
 	$(NPM) ci --prefix packages/ts/memorax-code-backend
-	node --test packages/npm/memorax-code/test/*.test.mjs scripts/check-local-trace-only.test.mjs
+	node --test packages/npm/memorax-code/test/*.test.mjs scripts/check-local-trace-only.test.mjs scripts/ci/dsh/*.test.mjs
 	node scripts/check-local-trace-only.mjs
 
 docs-check:
