@@ -6,7 +6,7 @@ import { basename, dirname, join, win32 } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
-import { collectCursorAppBackendDiagnostics, collectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { collectCursorAppBackendDiagnostics, collectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics, collectCursorAppSubmissionDiagnostics } from "./cursor-app-diagnostics.mjs";
 import { projectCursorAppHookTiming } from "./cursor-app-hook-diagnostics.mjs";
 import { collectCursorAppSkillHookContext } from "./cursor-app-hook-context.mjs";
 
@@ -16,9 +16,9 @@ function check(value, code) { if (!value) throw Object.assign(new Error(code), {
 function nativeFunction(name, context = {}) {
   const definition = source.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?(?=\\n(?:async )?function )`))?.[0];
   assert.ok(definition, name);
-  return runInNewContext(`(${definition})`, { check, Buffer, basename, dirname, join, once, collectCursorAppSkillHookContext, projectCursorAppHookTiming,
+  return runInNewContext(`(${definition})`, { check, Buffer, basename, dirname, join, once, collectCursorAppSkillHookContext, projectCursorAppHookTiming, collectCursorAppSubmissionDiagnostics,
     process: { platform: "darwin" }, appLaunch: 0, readyHookSessions: new Map(),
-    beginHookTiming() {}, markHookSubmit() {}, async observeHookTiming() {}, finishHookTiming() {}, async waitForHookReady() {}, ...context }, { timeout: 100 });
+    beginHookTiming() {}, markHookSubmit() {}, async observeHookTiming() {}, finishHookTiming() {}, async waitForHookReady() {}, async recordSubmissionFailure() {}, ...context }, { timeout: 100 });
 }
 function childProcess() {
   return Object.assign(new EventEmitter(), { pid: 201, exitCode: null, signalCode: null,
@@ -247,21 +247,43 @@ test("Run and Skip bind completed clicks to the exact run and fail closed on ide
   }
 });
 
-test("same-session recovery requires new identities and excludes the cancelled turn from history", async () => {
-  for (const mode of ["recovered", "cancelled-history", "reused-id"]) {
+test("same-session recovery uses the primary input beside the cancelled turn editor and keeps native identity checks", async () => {
+  for (const mode of ["recovered", "cancelled-history", "reused-id", "primary-missing", "primary-ambiguous"]) {
     const prior = { conversationId: "session", requestId: "old", userMessageId: "old", cancelled: true,
       completed: false, kvWrites: [], turnBlobId: Buffer.alloc(32) };
     const run = { conversationId: "session", prompt: "recovery", completed: true, userMessageId: "new",
       requestId: mode === "reused-id" ? "old" : "new", turnRefs: mode === "cancelled-history" ? [prior.turnBlobId] : [],
       kvReadCount: 0, kvReadResultCount: 0, kvWriteCount: 3, kvAckCount: 3,
       requestContextRequestCount: 1, requestContextResultCount: 1, requestContextCloseCount: 1 };
-    const agent = { runs: [prior], errors: [] }, report = {};
+    const inline = { className: "ui-prompt-input-editor__input", value: "cancelled prompt" };
+    const primary = { className: "aislash-editor-input", value: "" };
+    const editors = [inline, ...(mode === "primary-missing" ? [] : [primary]),
+      ...(mode === "primary-ambiguous" ? [{ ...primary }] : [])];
+    const agent = { runs: [prior], errors: [] }, report = {}, submitted = [];
+    const composer = { locator(selector) {
+      assert.ok(selector.endsWith('[contenteditable="true"][role="textbox"]:visible'));
+      const className = selector.match(/^\.([a-z_-]+)/)?.[1];
+      const matches = editors.filter(editor => !className || editor.className === className);
+      return { async fill(value) { check(matches.length === 1, "INPUT_LOCATOR_AMBIGUOUS"); matches[0].value = value; },
+        async press(key) {
+          check(matches.length === 1, "INPUT_LOCATOR_AMBIGUOUS");
+          check(matches[0] === primary, "EDITED_TURN_SUBMITTED");
+          assert.equal(key, "Enter"); assert.equal(primary.value, run.prompt);
+          submitted.push({ sessionId: prior.conversationId, requestId: run.requestId }); agent.runs.push(run);
+        } };
+    } };
     const runTurn = nativeFunction("runTurn", { agent, report, turns: [], workspace: "/owned/workspace",
-      page: { locator: () => ({ locator: () => ({}) }) }, async submitPrompt() { agent.runs.push(run); },
+      page: { locator(selector) { assert.equal(selector, '[data-composer-id="session"][data-composer-status]:visible'); return composer; } },
+      submitPrompt: nativeFunction("submitPrompt"),
       async waitFor(predicate) { check(report.stage !== "native-persistence", "VERIFIED"); assert.equal(await predicate(), true); },
     });
-    await assert.rejects(runTurn("session", { prompt: "recovery" }), { code: mode === "recovered" ? "VERIFIED"
-      : mode === "reused-id" ? "CURSOR_APP_REUSED_TURN_IDENTITY" : "CURSOR_APP_HISTORY_MISMATCH" });
+    const inputRejected = mode.startsWith("primary-");
+    await assert.rejects(runTurn("session", { prompt: "recovery" }), { code: inputRejected ? "INPUT_LOCATOR_AMBIGUOUS"
+      : mode === "recovered" ? "VERIFIED" : mode === "reused-id" ? "CURSOR_APP_REUSED_TURN_IDENTITY" : "CURSOR_APP_HISTORY_MISMATCH" });
+    assert.equal(inline.value, "cancelled prompt");
+    assert.equal(prior.requestId, "old");
+    assert.deepEqual(submitted, inputRejected ? [] : [{ sessionId: "session", requestId: run.requestId }]);
+    assert.equal(agent.runs[0], prior);
   }
 });
 
@@ -591,7 +613,13 @@ test("Repo Memory timing observes the first submission before reporting its orig
   const worker = runInNewContext("(async function () {" + body + ")", { check, basename, report, agent, turns: [], repoMemory: undefined,
     async stopApp() {}, async assertProcessesStopped() {}, async prepareRepoMemoryWorkspace() { return { repo: "/owned/repo" }; },
     async startApp() { calls.push("config-ready"); }, async openSession() { calls.push("session-ready"); return "parent-session"; },
-    page: { locator: () => ({ locator: () => ({}) }) }, repoMemoryFixture: { prompt: "synthetic" },
+    page: { locator(selector) {
+      assert.equal(selector, '[data-composer-id="parent-session"][data-composer-status]:visible');
+      return { locator(inputSelector) {
+        assert.equal(inputSelector, '.aislash-editor-input[contenteditable="true"][role="textbox"]:visible');
+        return {};
+      } };
+    } }, repoMemoryFixture: { prompt: "synthetic" },
     beginHookTiming(phase, sessionId, options) { calls.push([phase, sessionId, options.runIndex]); },
     async submitPrompt() { calls.push("submit"); agent.runs.push({ requestId: "first" }, { requestId: "retry" }); agent.errors.push(failure); },
     async observeHookTiming() { calls.push("observe"); },
@@ -599,4 +627,130 @@ test("Repo Memory timing observes the first submission before reporting its orig
   });
   await assert.rejects(worker(), { code: failure });
   assert.deepEqual(calls, ["config-ready", "session-ready", ["turn", "parent-session", 0], "submit", "observe"]);
+});
+
+
+test("submission failures retain the exact error and action phase without retrying or submitting later", async () => {
+  for (const phase of ["fill", "type-skill", "select-skill", "verify-skill", "move-to-end", "insert-text", "enter"]) {
+    const error = new Error(privateCanary), actions = [], records = [];
+    const act = async (current) => { actions.push(current); if (current === phase) throw error; };
+    const input = { fill: () => act("fill"), pressSequentially: () => act("type-skill"),
+      press: key => act(key === "End" ? "move-to-end" : "enter"),
+      locator: () => ({ count: async () => { await act("verify-skill"); return 1; } }) };
+    const composer = {}, sessionId = privateCanary;
+    const submit = nativeFunction("submitPrompt", {
+      page: { locator: () => ({ locator: () => ({ filter: () => ({ count: async () => 1, click: () => act("select-skill") }) }) }),
+        keyboard: { insertText: () => act("insert-text") } },
+      async waitFor(predicate, code) { check(await predicate(), code); },
+      async recordSubmissionFailure(value) { records.push(value); throw new Error("diagnostic read failed"); },
+      markHookSubmit() { actions.push("mark"); },
+    });
+    await assert.rejects(submit(input, { operation: phase === "fill" ? undefined : "search", prompt: "/memorax-code synthetic" },
+      { composer, sessionId }), failure => failure === error);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].phase, phase);
+    assert.equal(records[0].error, error);
+    assert.equal(records[0].input, input);
+    assert.equal(records[0].composer, composer);
+    assert.equal(records[0].sessionId, sessionId);
+    assert.equal(actions.at(-1), phase);
+    assert.equal(actions.filter(action => action === phase).length, 1);
+    assert.equal(actions.includes("mark"), phase === "enter");
+  }
+});
+
+test("failed submission snapshots distinguish duplicate editors and never act on an ambiguous locator", async () => {
+  for (const mode of ["unique", "duplicate", "absent", "not-editable", "different-session", "missing-session", "unknown-status"]) {
+    const report = {}, calls = [], count = mode === "absent" ? 0 : mode === "duplicate" ? 2 : 1;
+    const sessionId = privateCanary, error = Object.assign(new Error(privateCanary), { name: "TimeoutError" });
+    const composer = { async count() { return mode === "absent" ? 0 : 1; },
+      async getAttribute(name) { calls.push("status"); assert.equal(name, "data-composer-status"); return mode === "unknown-status" ? privateCanary : "cancelled"; },
+      locator(selector) {
+        assert.ok(['.aislash-editor-input[contenteditable="true"][role="textbox"]:visible',
+          '.ui-prompt-input-editor__input[contenteditable="true"][role="textbox"]:visible'].includes(selector));
+        calls.push(selector);
+        return { count: async () => mode === "absent" ? 0 : selector.includes("aislash") || mode === "duplicate" ? 1 : 0 };
+      } };
+    const input = { async count() { return count; }, async isEditable() { calls.push("editable"); return mode !== "not-editable"; } };
+    const capture = nativeFunction("recordSubmissionFailure", { report,
+      async bounded(promise, code, timeout) { assert.equal(code, "CURSOR_APP_SUBMIT_DIAGNOSTICS_TIMEOUT"); assert.equal(timeout, 1000); return promise; },
+      page: { async evaluate(fn, id) {
+        const composerId = mode === "different-session" ? "different-synthetic-session" : mode === "missing-session" ? undefined : sessionId;
+        const read = runInNewContext("(" + fn.toString() + ")", { window: { driver: { async executeCommand(command) {
+          assert.equal(command, "workbench.action.devGetComposerDataForTesting");
+          return { composerId, privateData: privateCanary };
+        } } } });
+        return read(id);
+      } },
+    });
+    await capture({ composer, input, sessionId, phase: "fill", error });
+    const value = report.nativeSubmit;
+    assert.equal(value.readStatus, "present");
+    assert.equal(value.failureKind, "timeout");
+    assert.equal(value.inputCount, count);
+    assert.equal(value.primaryInputCount, mode === "absent" ? 0 : 1);
+    assert.equal(value.editingInputCount, mode === "duplicate" ? 1 : 0);
+    assert.equal(value.editable, count === 1 ? mode !== "not-editable" : null);
+    assert.equal(value.selectedSessionMatches, mode === "missing-session" ? null : mode !== "different-session");
+    assert.equal(value.composerStatus, mode === "absent" ? "absent" : mode === "unknown-status" ? "other" : "cancelled");
+    assert.equal(calls.includes("editable"), count === 1);
+    assert.equal(calls.includes("status"), mode !== "absent");
+    assert.equal(JSON.stringify(value).includes(privateCanary), false);
+    await capture({ phase: "enter", error: new Error("later error") });
+    assert.equal(report.nativeSubmit, value);
+  }
+});
+
+test("unavailable submission diagnostics preserve the original phase and failure without inventing zero counts", async () => {
+  for (const failure of ["read", "timeout"]) {
+    const report = {}, error = new Error("strict mode violation " + privateCanary);
+    const capture = nativeFunction("recordSubmissionFailure", { report,
+      async bounded(promise) { await promise.catch(() => {}); throw new Error(privateCanary); },
+      page: { evaluate: async () => true },
+    });
+    const composer = { count: async () => { if (failure === "read") throw new Error(privateCanary); return 1; },
+      getAttribute: async () => "cancelled", locator: () => ({ count: async () => 1 }) };
+    const input = { count: async () => 2 };
+    await capture({ composer, input, sessionId: privateCanary, phase: "fill", error });
+    assert.equal(report.nativeSubmit.readStatus, "unavailable");
+    assert.equal(report.nativeSubmit.failureKind, "ambiguous");
+    assert.equal(report.nativeSubmit.phase, "fill");
+    for (const key of ["composerCount", "inputCount", "primaryInputCount", "editingInputCount", "editable", "selectedSessionMatches"]) {
+      assert.equal(report.nativeSubmit[key], null);
+    }
+    assert.equal(JSON.stringify(report).includes(privateCanary), false);
+  }
+});
+
+
+test("a hung diagnostic read cannot hold submission failure open beyond its own bounded budget", async () => {
+  const report = {}, original = new Error("strict mode violation " + privateCanary);
+  const bounded = nativeFunction("bounded", { setTimeout, clearTimeout });
+  const capture = nativeFunction("recordSubmissionFailure", { report, bounded,
+    page: { evaluate: async () => true } });
+  const composer = { count: () => new Promise(() => {}), locator: () => ({ count: async () => 1 }) };
+  const input = { count: async () => 2 };
+  await capture({ composer, input, sessionId: privateCanary, phase: "fill", error: original });
+  assert.equal(report.nativeSubmit.readStatus, "unavailable");
+  assert.equal(report.nativeSubmit.phase, "fill");
+  assert.equal(report.nativeSubmit.failureKind, "ambiguous");
+  assert.equal(JSON.stringify(report).includes(privateCanary), false);
+});
+
+
+test("the pending-shell interruption fixture also submits only through its session's primary input", async () => {
+  const actions = [], finished = new Error("submission observed"), sessionId = "interrupted-session";
+  const input = { async fill(value) { actions.push(["fill", value]); }, async press(key) { actions.push(["press", key]); throw finished; } };
+  const interrupt = nativeFunction("interruptPendingShell", { agent: { runs: [] }, report: {}, interruption: undefined,
+    workspace: "/owned/workspace", interruptedFixture: { prompt: "synthetic interruption" }, async openSession() { return sessionId; },
+    page: { locator(selector) {
+      assert.equal(selector, '[data-composer-id="interrupted-session"][data-composer-status]:visible');
+      return { locator(inputSelector) {
+        assert.equal(inputSelector, '.aislash-editor-input[contenteditable="true"][role="textbox"]:visible');
+        return input;
+      } };
+    } },
+  });
+  await assert.rejects(interrupt(), error => error === finished);
+  assert.deepEqual(actions, [["fill", "synthetic interruption"], ["press", "Enter"]]);
 });
