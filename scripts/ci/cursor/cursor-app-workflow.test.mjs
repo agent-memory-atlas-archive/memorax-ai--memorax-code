@@ -72,15 +72,15 @@ test("Cursor App matrix uses the validated candidate, frozen release inventory a
   assert.match(canary, /^      fail-fast: false$/m);
   assert.match(canary, /^      matrix: \$\{\{ fromJSON\(needs\.package\.outputs\.cursor-matrix\) \}\}$/m);
   assert.match(job("package"), /^      cursor-matrix: \$\{\{ steps\.cursor-versions\.outputs\.matrix \}\}$/m);
-  assert.match(canary, /actions\/download-artifact@v4\n        with:\n          name: memorax-code-package\n          path: dist\/npm\/tarballs/);
-  assert.match(canary, /actions\/download-artifact@v4\n        with:\n          name: cursor-app-releases\n          path: \$\{\{ runner\.temp \}\}\/cursor-app-releases/);
+  assert.match(canary, /actions\/download-artifact@v4\n        with:\n          name: \$\{\{ needs\.package\.outputs\.package-artifact-name \}\}\n          path: dist\/npm\/tarballs/);
+  assert.match(canary, /actions\/download-artifact@v4\n        with:\n          name: \$\{\{ needs\.package\.outputs\.cursor-releases-artifact-name \}\}\n          path: \$\{\{ runner\.temp \}\}\/cursor-app-releases/);
   const uploads = canary.split("      - uses: actions/upload-artifact@v4\n");
   assert.equal(uploads.length, 3);
   for (const [index, kind] of [[1, "lifecycle"], [2, "app"]]) {
     assert.match(uploads[index], /^        if: always\(\)$/m);
     assert.match(uploads[index], new RegExp(`^          path: \\$\\{\\{ runner\\.temp \\}\\}/cursor-${kind}-report/report\\.json$`, "m"));
     assert.match(uploads[index], /^          if-no-files-found: error$/m);
-    assert.match(uploads[index], new RegExp(`^          name: cursor-${kind}-\\$\\{\\{ matrix\\.os \\}\\}-\\$\\{\\{ matrix\\.channel \\}\\}-node-\\$\\{\\{ matrix\\.node \\}\\}-report$`, "m"));
+    assert.match(uploads[index], new RegExp(`^          name: cursor-${kind}-\\$\\{\\{ matrix\\.os \\}\\}-\\$\\{\\{ matrix\\.channel \\}\\}-node-\\$\\{\\{ matrix\\.node \\}\\}-report-attempt\\$\\{\\{ github\\.run_attempt \\}\\}$`, "m"));
   }
   assert.match(result, /^    needs: \[package, cursor-app\]$/m);
   assert.doesNotMatch(canary + result, /continue-on-error:/);
@@ -94,7 +94,7 @@ test("Cursor package lifecycle is required in every cell before native App execu
   const lifecycle = step[1].split(/\n      - /)[0];
   assert.match(lifecycle, /^        shell: bash$/m);
   assert.doesNotMatch(lifecycle, /^        (?:if|continue-on-error):/m);
-  assert.ok(canary.indexOf("name: memorax-code-package") < canary.indexOf(`- name: ${name}`));
+  assert.ok(canary.indexOf("name: ${{ needs.package.outputs.package-artifact-name }}") < canary.indexOf(`- name: ${name}`));
   assert.ok(canary.indexOf(`- name: ${name}`) < canary.indexOf("- name: Verify isolated native Cursor App writeback"));
   assert.match(script("cursor-app", name), /node scripts\/ci\/cursor\/cursor-lifecycle-check\.mjs "\$1" "\$RUNNER_TEMP\/cursor-lifecycle-report"/);
 });
@@ -110,7 +110,7 @@ test("Cursor release acquisition runs once outside the matrix and excludes dedic
     }
   }
   assert.equal((source.match(/node scripts\/ci\/cursor\/cursor-app-release\.mjs resolve-linux/g) ?? []).length, 1);
-  assert.match(step, /name: cursor-app-releases\n          path: \$\{\{ runner\.temp \}\}\/cursor-app-releases\.json\n          if-no-files-found: error/);
+  assert.match(step, /name: cursor-app-releases-attempt\$\{\{ github\.run_attempt \}\}\n          path: \$\{\{ runner\.temp \}\}\/cursor-app-releases\.json\n          if-no-files-found: error/);
 });
 
 test("Cursor matrix independently merges exact platform releases and keeps Linux baseline Node 22", () => {

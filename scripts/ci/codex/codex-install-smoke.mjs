@@ -11,6 +11,8 @@ import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { assertBackendReplacement, assertCredentialNotEchoed, assertSetupInputRejection,
   snapshotProtectedConfiguration, assertProtectedConfiguration } from "./codex-lifecycle-assertions.mjs";
+import { createEvidenceRecorder } from "../shared/ci-evidence.mjs";
+import { projectError, projectPathAlias, projectProductDiagnostics, signal as knownSignal } from "../shared/ci-evidence-projections.mjs";
 
 const execFileAsync = promisify(execFile);
 const pluginName = "memorax-code-codex-adapter";
@@ -45,6 +47,9 @@ let npmCommand, npmPrefix, candidateTarball, ptyPackage, ptyScript;
 let expectedPackageVersion, expectedPluginVersion, expectedEvents, sourceRoot, parse;
 let originalProvider;
 const preservedMemory = new Map();
+// Evidence stays outside `root`, so it survives cleanup failures and killed runners.
+const evidence = createEvidenceRecorder({ suite: "codex-install-smoke", client: "codex" });
+evidence.track(() => ({ stage, cleanupStage, checks: report.checks.length }));
 
 try {
   check(["darwin", "linux", "win32"].includes(process.platform), "This smoke test requires macOS, Linux or Windows");
@@ -441,7 +446,15 @@ try {
   if (error.terminalError) report.terminalError = error.terminalError;
   if (error.terminalDiagnostics) report.terminalDiagnostics = error.terminalDiagnostics;
   if (error.terminalNativeError) report.terminalNativeError = error.terminalNativeError;
+  // A command timeout is reported by execFile as a killed child with a signal and no exit code.
+  if (knownSignal(error.signal)) report.commandSignal = error.signal;
+  if (error.killed === true) report.commandKilled = true;
+  // Typed name and code only; the message and command output stay private.
+  const errorDetails = projectError(error);
+  if (Object.keys(errorDetails).length) report.errorDetails = errorDetails;
+  await collectProductDiagnostics();
 } finally {
+  const functionalOutcome = report.status;
   try {
     if (setupStarted) {
       cleanupStage = "entrypoint_check";
@@ -456,8 +469,15 @@ try {
     report.cleanup = "PASS";
   } catch (error) {
     report.status = "FAIL";
-    report.cleanup = "FAIL: isolated state retained because shutdown was not confirmed";
+    // Directory removal starts only after every shutdown check above has passed,
+    // or directly when setup never started a Backend.
+    const removalOnly = cleanupStage === "directory_removal";
+    report.cleanup = !removalOnly ? "FAIL: isolated state retained because shutdown was not confirmed"
+      : setupStarted ? "FAIL: shutdown was confirmed but the isolated directory could not be removed"
+        : "FAIL: no Backend was started and the isolated directory could not be removed";
     report.cleanupFailure = { stage: cleanupStage, code: cleanupCodes[cleanupStage] };
+    const busyPath = removalOnly ? projectPathAlias(error.path, { root }) : undefined;
+    if (busyPath) report.cleanupFailure.path = busyPath;
     if (cleanupStage === "tracked_process" && Number.isInteger(cleanupTrackedPidIndex)) {
       report.cleanupFailure.trackedPidIndex = cleanupTrackedPidIndex;
       report.cleanupFailure.trackedPidCount = backendPids.size;
@@ -478,9 +498,48 @@ try {
     server.closeAllConnections();
     await new Promise((done) => server.close(done));
   }
+  report.evidenceStatus = evidence.finish({ testOutcome: report.status, failure: failureEvidence(functionalOutcome) });
 }
 console.log(JSON.stringify(report, null, 2));
 if (report.status !== "PASS") process.exitCode = 1;
+
+// Read the product's validated diagnostic records before cleanup removes them;
+// only typed fields reach the evidence journal.
+async function collectProductDiagnostics() {
+  if (!env || !entrypoint || !(await exists(entrypoint).catch(() => false))) return;
+  await evidence.collect("productDiagnostics", async () => {
+    const result = await execFileAsync(process.execPath, [entrypoint, "logs", "--diagnostics", "--limit", "20", "--json"], {
+      cwd: workspace, env, timeout: 15_000, maxBuffer: 1024 * 1024, encoding: "utf8", windowsHide: true,
+    }).catch((error) => { if (/^\s*\{/.test(error.stdout ?? "")) return error; throw error; });
+    return projectProductDiagnostics(JSON.parse(result.stdout));
+  }, { budgetMs: 20_000 });
+}
+
+function failureEvidence(functionalOutcome) {
+  if (report.status === "PASS") return undefined;
+  const functionalFailed = functionalOutcome !== "PASS";
+  const cleanup = report.cleanupFailure;
+  const cleanupCode = cleanup ? [cleanup.code, cleanup.systemCode].filter(Boolean).join(":") : undefined;
+  const message = typeof report.error === "string" ? report.error : "";
+  const functionalCode = report.diagnosticCode ?? (/^[A-Z][A-Z0-9_]{1,79}$/.test(message) ? message : undefined)
+    ?? report.terminalError ?? report.nativeErrorCode ?? (Number.isInteger(report.exitCode) ? `EXIT_${report.exitCode}` : undefined)
+    ?? (typeof report.errorDetails?.code === "string" ? report.errorDetails.code : undefined)
+    // Smoke messages are fixed test text; a short digest keeps the signature stable and compact.
+    ?? `MESSAGE_${createHash("sha256").update(message).digest("hex").slice(0, 8).toUpperCase()}`;
+  return {
+    kind: functionalFailed ? (cleanup ? "functional+cleanup" : "functional") : "cleanup",
+    stage: functionalFailed ? report.stage : undefined,
+    code: functionalFailed ? functionalCode : cleanupCode,
+    error: functionalFailed ? message : undefined,
+    exitCode: report.exitCode, commandSignal: report.commandSignal, commandKilled: report.commandKilled,
+    nativeErrorCode: report.nativeErrorCode, diagnosticCode: report.diagnosticCode, terminalError: report.terminalError,
+    errorDetails: report.errorDetails,
+    cleanupStage: cleanup?.stage, cleanupCode, cleanupPath: cleanup?.path,
+    backendStarted: setupStarted,
+    shutdownConfirmed: cleanup ? setupStarted && cleanup.stage === "directory_removal" : undefined,
+    checksPassed: report.checks.length,
+  };
+}
 
 async function verifyReady(attempt, expectedUser = fixtureUser) {
   stage = `${attempt} native registration`;

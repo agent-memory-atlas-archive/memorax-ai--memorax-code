@@ -1469,8 +1469,9 @@ Placement rules:
 - Native-client CI runners and their adjacent helper tests live in
   `scripts/ci/<harness>`. CodeBuddy and WorkBuddy share
   `scripts/ci/codebuddy-workbuddy` because they reuse the same runtime checks.
-  Cross-harness process cleanup tests and Windows PATH utilities live in
-  `scripts/ci/shared`; repository build, packaging, and release scripts stay
+  Cross-harness process cleanup tests, Windows PATH utilities and the
+  first-failure evidence recorder live in `scripts/ci/shared`; repository
+  build, packaging, and release scripts stay
   in `scripts`. Cursor App image assets remain in `scripts/fixtures/cursor-app`.
 - Cross-capability server composition belongs in `test/app`; wire-level Hook
   protocol behavior belongs in `test/transport/http`.
