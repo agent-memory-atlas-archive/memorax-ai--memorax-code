@@ -1,0 +1,56 @@
+name: TEMPORARY evidence export probes
+
+# Temporary validation for the first-failure evidence export path on the Draft PR. It uses its own
+# directories and artifacts, never the native suites' evidence, uploads or summary, and is reverted
+# before review.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  probes:
+    name: TEMPORARY evidence export probes (windows-2025)
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Prepare independent probe directories
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/evidence-probe/empty" "$RUNNER_TEMP/evidence-probe/invalid-name"
+          printf 'probe\n' > "$RUNNER_TEMP/evidence-probe/invalid-name/probe.txt"
+      - name: Probe an upload that finds no files
+        id: probe-empty
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: tmp-evidence-probe-empty-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/evidence-probe/empty
+          if-no-files-found: warn
+          retention-days: 1
+      - name: Probe an upload with an invalid artifact name
+        id: probe-invalid-name
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: 'tmp-evidence-probe:invalid-attempt${{ github.run_attempt }}'
+          path: ${{ runner.temp }}/evidence-probe/invalid-name
+          if-no-files-found: warn
+          retention-days: 1
+      - name: Compare probe results with their expectations
+        if: always()
+        shell: bash
+        env:
+          EMPTY_OUTCOME: ${{ steps.probe-empty.outcome }}
+          EMPTY_ARTIFACT_ID: ${{ steps.probe-empty.outputs.artifact-id }}
+          INVALID_OUTCOME: ${{ steps.probe-invalid-name.outcome }}
+          INVALID_ARTIFACT_ID: ${{ steps.probe-invalid-name.outputs.artifact-id }}
+        run: node scripts/ci/shared/tmp-evidence-export-probes.mjs "$RUNNER_TEMP/evidence-probe"
