@@ -12,6 +12,7 @@ on:
         type: boolean
         default: false
   pull_request:
+    branches: [main]
   push:
     branches: [main]
 
@@ -19,7 +20,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: codex-install-${{ github.ref }}-${{ inputs.diagnose_opencode_initialization && 'diagnostic' || 'acceptance' }}
+  # A newer run cancels only an older run of the same purpose: one pull request, main pushes, or one manual selection on one ref.
+  group: codex-install-${{ github.event_name == 'workflow_dispatch' && (inputs.diagnose_opencode_initialization && 'manual-opencode-initialization' || inputs.check_deepseek && 'manual-provider' || 'manual-functional') || github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -681,7 +683,8 @@ jobs:
           Remove-Item -LiteralPath $root -Recurse -Force
 
   opencode-result:
-    name: OpenCode functional result
+    # Only pull request runs report the formal result names; push and manual runs add their purpose.
+    name: ${{ github.event_name == 'pull_request' && 'OpenCode functional result' || format('OpenCode functional result ({0})', github.event_name == 'push' && 'main push' || 'manual run') }}
     if: always() && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization))
     needs: [package, opencode]
     runs-on: ubuntu-24.04
@@ -700,7 +703,7 @@ jobs:
           fi
 
   claude-result:
-    name: Claude native smoke result
+    name: ${{ github.event_name == 'pull_request' && 'Claude native smoke result' || format('Claude native smoke result ({0})', github.event_name == 'push' && 'main push' || 'manual run') }}
     if: always() && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization))
     needs: [package, claude]
     runs-on: ubuntu-24.04
@@ -719,7 +722,7 @@ jobs:
           fi
 
   codebuddy-result:
-    name: CodeBuddy functional result
+    name: ${{ github.event_name == 'pull_request' && 'CodeBuddy functional result' || format('CodeBuddy functional result ({0})', github.event_name == 'push' && 'main push' || 'manual run') }}
     if: always() && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization))
     needs: [package, codebuddy]
     runs-on: ubuntu-24.04
@@ -738,7 +741,7 @@ jobs:
           fi
 
   cursor-app-result:
-    name: Cursor App canary result
+    name: ${{ github.event_name == 'pull_request' && 'Cursor App canary result' || format('Cursor App canary result ({0})', github.event_name == 'push' && 'main push' || 'manual run') }}
     if: always() && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization))
     needs: [package, cursor-app]
     runs-on: ubuntu-24.04
@@ -758,7 +761,7 @@ jobs:
           fi
 
   functional-result:
-    name: ${{ github.event_name == 'workflow_dispatch' && inputs.check_deepseek && 'Codex provider-only result' || 'Codex functional result' }}
+    name: ${{ github.event_name == 'pull_request' && 'Codex functional result' || github.event_name == 'workflow_dispatch' && inputs.check_deepseek && 'Codex provider-only result' || format('Codex functional result ({0})', github.event_name == 'push' && 'main push' || 'manual run') }}
     if: always() && !inputs.diagnose_opencode_initialization
     needs: [package, install, provider]
     runs-on: ubuntu-24.04

@@ -64,7 +64,17 @@ test("WorkBuddy matrix retains the package gate and one aggregate result", () =>
   assert.doesNotMatch(job("workbuddy-native"), /run:.*\$\{\{ matrix\.release/);
   assert.match(job("workbuddy-native"), /-ReleaseFile \(Join-Path \$env:RUNNER_TEMP 'workbuddy-release\.json'\)/);
   const result = job("workbuddy-result");
-  assert.match(result, /^    name: WorkBuddy functional result$/m);
+  const name = result.match(/^    name: \$\{\{ (.+) \}\}$/m)?.[1];
+  assert.ok(name);
+  for (const [event, expected] of [
+    ["pull_request", "WorkBuddy functional result"],
+    ["push", "WorkBuddy functional result (main push)"],
+    ["workflow_dispatch", "WorkBuddy functional result (manual run)"],
+  ]) {
+    assert.equal(runInNewContext(name, {
+      github: { event_name: event }, format: (pattern, value) => pattern.replace("{0}", value),
+    }, { timeout: 100 }), expected);
+  }
   assert.match(result, /^    needs: \[workbuddy-package, workbuddy-native\]$/m);
   assert.match(result, /PACKAGE_RESULT: \$\{\{ needs\.workbuddy-package\.result \}\}/);
   assert.match(result, /WORKBUDDY_RESULT: \$\{\{ needs\.workbuddy-native\.result \}\}/);

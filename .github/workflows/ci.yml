@@ -16,7 +16,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # A newer run cancels only an older run of the same purpose: one pull request, main pushes, or one manual selection on one ref.
+  group: ci-${{ github.event_name == 'workflow_dispatch' && (inputs.diagnose_workbuddy && 'manual-workbuddy' || 'manual-basic') || github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -34,6 +35,8 @@ jobs:
           package-manager-cache: false
       - name: Verify WorkBuddy workflow contract
         run: node --test scripts/ci/codebuddy-workbuddy/workbuddy-workflow.test.mjs
+      - name: Verify workflow triggers, check names and concurrency
+        run: node --test scripts/ci/shared/workflow-scenarios.test.mjs
       - name: Run the existing regression suite
         shell: bash
         run: |
@@ -304,7 +307,8 @@ jobs:
           printf '%s\n' 'Installation, setup interruption, Memory/Skill, four permission cases and Repo Memory worker configuration checks. The two explicit runtime interrupt cases are excluded and remain separate strict manual diagnostics. General runtime interruption, desktop UI and valid Repo Memory generation are not established. This result covers only the selected verified package and current runner; the entire platform, release and Node matrix must pass for an overall result.' >> "$GITHUB_STEP_SUMMARY"
 
   workbuddy-result:
-    name: WorkBuddy functional result
+    # Only pull request runs report the formal result name; push and manual runs add their purpose.
+    name: ${{ github.event_name == 'pull_request' && 'WorkBuddy functional result' || format('WorkBuddy functional result ({0})', github.event_name == 'push' && 'main push' || 'manual run') }}
     if: always() && (github.event_name != 'workflow_dispatch' || inputs.diagnose_workbuddy)
     needs: [workbuddy-package, workbuddy-native]
     runs-on: ubuntu-24.04
