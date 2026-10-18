@@ -379,11 +379,67 @@ Native-client runners, helpers, and their adjacent tests are grouped under
 
 - `codex/`, `claude/`, `dsh/`, `opencode/`, and `cursor/` own each client's checks.
 - `codebuddy-workbuddy/` owns both clients' entrypoints and shared checks.
-- `shared/` owns cross-client cleanup tests and Windows user PATH utilities.
+- `shared/` owns cross-client cleanup tests, Windows user PATH utilities and the
+  first-failure evidence recorder.
 
 Keep existing Make targets as the developer entrypoints. Repository-wide build,
 package, documentation, and release scripts remain directly in `scripts/`;
 Cursor App image assets remain in `scripts/fixtures/cursor-app/`.
+
+### Native CI First-Failure Evidence
+
+The Codex and OpenCode functional jobs record first-failure evidence by default;
+the other clients keep their existing reports. The wrappers read
+`MEMORAX_CI_EVIDENCE_DIR` before clearing the environment, require an empty real
+directory outside the test runtime, and pass it only to the test runners; an
+unusable directory disables evidence without changing the result. They keep a
+ledger of the wrapper phase (`setup`, `suites`, `cleanup`) and of each planned
+suite (`PASS`, `FAIL`, `NOT_RUN`, `INCOMPLETE`, `SKIPPED_BY_DESIGN`); suite
+order, fail-fast behavior and assertions are unchanged. A GitHub `pwsh` step
+exits with `$LASTEXITCODE`, so the PowerShell evidence helpers restore it after
+every call. After their native suites and the evidence export, the Windows jobs
+run a CI tool self-test: both wrappers under real PowerShell with stub suites,
+failing ledger calls and an unusable evidence directory. It fails the job when
+any expected test fails or is skipped, and reports on its own summary line
+instead of in `testOutcome`.
+
+The Codex installation smoke and the OpenCode background Repo Memory case
+append a journal when their progress or key observations change, so records
+written before a runner is killed stay readable; an interrupted last record is
+reported as a truncated tail. Before cleanup removes the runtime, a failure
+collects the product's `logs --diagnostics` records, Repo Memory job state,
+owned process state and trace event types, each under its own time budget.
+
+Evidence holds typed allowlisted fields only: stages, error, system and exit
+codes, signals, counts, booleans, relative times, versions, checksums and
+aliases for paths inside the test root. Raw logs, command lines, configuration,
+prompts, transcripts, trace payloads, credentials, PIDs and absolute paths are
+excluded. Three results stay separate: `testOutcome` reports the native suites
+and fails the job, while `evidenceStatus` and `exportStatus` only add warnings.
+`evidenceStatus` is `UNAVAILABLE` when the test step ran without leaving a
+ledger, and `PARTIAL` when an expected record is missing, damaged or cut at the
+read limit. A skipped step owes nothing, and only an instrumented suite that ran
+owes a journal and a result, so unreached, skipped and uninstrumented suites do
+not make evidence partial.
+`exportStatus` is `UPLOADED` only when the upload step succeeded and returned an
+artifact ID; otherwise it is `EMPTY`, `UPLOAD_FAILED` or `NOT_ATTEMPTED`. The
+job summary prints a `client|os|suite|stage|code` signature and a category:
+`functional`, `cleanup` or `functional+cleanup` from the failing suite's result,
+`interrupted` for a suite that never ended and left no result, `setup` or
+`wrapper_cleanup` for a wrapper failure before the suites or after all of them
+passed, and `unclassified` otherwise. A suite whose end the wrapper never
+recorded stays `INCOMPLETE` next to the outcome its runner reported: a failure
+the runner reported keeps its category, and any other reported result is
+`EXIT_UNCONFIRMED`. Equal signatures do not prove the same root cause.
+
+Artifact names carry the run attempt, so a re-run keeps every earlier attempt's
+evidence and inputs: `native-evidence-<client>-<os>-<channel>-node-<n>-attempt<N>`,
+the candidate `memorax-code-package-attempt<N>`, `cursor-app-releases-attempt<N>`,
+and `native-client-inputs-attempt<N>`, which records the package SHA-256,
+artifact ID and digest, and each frozen npm client version with its registry
+integrity. They are retained for 30 days. A passing re-run does not mark an
+earlier failure as fixed. To keep evidence from a local run, set
+`MEMORAX_CI_EVIDENCE_DIR` to a new directory before starting a wrapper.
 
 ### Codex Functional CI
 
@@ -529,7 +585,7 @@ memorax_dev make npm-package-check
 scripts/ci/codex/codex-install-check.sh dist/npm/tarballs 0.147.0 0.1.17
 ```
 
-On Windows, download the workflow's package artifact into `dist/npm/tarballs`,
+On Windows, download the workflow's `memorax-code-package-attempt<N>` artifact into `dist/npm/tarballs`,
 then use a disposable PowerShell 7 session with Node.js and npm on PATH:
 
 ```powershell
@@ -663,7 +719,7 @@ another exact client version:
 bash scripts/ci/opencode/opencode-install-check.sh dist/npm/tarballs 1.18.18 0.1.18
 ```
 
-On native Windows, download the package artifact and use a disposable
+On native Windows, download the `memorax-code-package-attempt<N>` artifact and use a disposable
 PowerShell 7 session with Node.js, npm, and Git for Windows available:
 
 ```powershell
@@ -808,7 +864,7 @@ Claude version:
 bash scripts/ci/claude/claude-install-check.sh dist/npm/tarballs 2.1.277 0.1.18
 ```
 
-On native Windows, download the package artifact and use a disposable
+On native Windows, download the `memorax-code-package-attempt<N>` artifact and use a disposable
 PowerShell 7 session with Node.js 22 or later, npm, and Git for Windows:
 
 ```powershell
