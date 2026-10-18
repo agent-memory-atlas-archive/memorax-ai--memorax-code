@@ -369,14 +369,6 @@ jobs:
           $tap = Join-Path $env:RUNNER_TEMP 'evidence-wrapper-self-test.tap'
           node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap "--test-reporter-destination=$tap" scripts/ci/shared/native-evidence-wrappers.test.mjs
           node scripts/ci/shared/ci-evidence.mjs self-test-status --tap $tap --exit-code $LASTEXITCODE --github-summary $env:GITHUB_STEP_SUMMARY
-      # TEMPORARY RERUN_PROBE: fails one existing Codex Windows cell on attempt 1 only, to check that
-      # "Re-run failed jobs" reuses the candidate package and keeps attempt-1 evidence. Not a product failure.
-      - name: RERUN_PROBE intentional attempt-1 failure (temporary, not a product failure)
-        if: matrix.os == 'windows-2025' && matrix.codex == '0.147.0' && github.run_attempt == '1'
-        shell: bash
-        run: |
-          echo '::error title=RERUN_PROBE::Intentional attempt-1 failure for the failed-jobs re-run experiment; not a product or native test failure.'
-          exit 1
 
   opencode:
     name: OpenCode ${{ matrix.channel }} ${{ matrix.opencode }} (${{ matrix.os }}, Node ${{ matrix.node }})
