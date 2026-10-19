@@ -332,8 +332,16 @@ and the test-script commit; an optional `expected_sha` must equal it. It records
 release eligibility separately from acceptance: the ref must be `main`, versions
 must be consistent, `CHANGELOG.md` needs a dated entry for the version, no
 `v<version>` tag may exist, the version must be newer than the previous release
-tag, and npm must show that the version was never published. A failed or
-unreadable npm query leaves eligibility unconfirmed rather than unpublished. The
+tag, and npm must show that the version was never published. Only stable
+`MAJOR.MINOR.PATCH` versions are releasable; a prerelease or build version is
+`NOT_RELEASABLE` (`PRERELEASE_NOT_SUPPORTED`) and is never compared, and
+prerelease tags and npm prereleases are not part of the release history. npm's
+stable releases must agree with that history, so publishing the candidate as
+`latest` cannot move `latest` backwards or skip a release: no newer stable
+version may be published, the newest stable version besides the candidate must
+be the previous release tag (none when no tag is reachable), and `latest` must
+point to the newest stable version. A failed or unreadable npm query leaves
+eligibility unconfirmed rather than unpublished. The
 job also records the previous release tag, the commits and merged pull requests
 since it, and the README comparison base: the previous release commit, or the
 first parent when no release tag is reachable. Eligibility never decides which
@@ -343,13 +351,24 @@ and only reports `NOT_RELEASABLE`.
 `Release acceptance result` downloads the candidate by its artifact ID, confirms
 through the API that the artifact belongs to the run, has not expired, and has
 the recorded digest, recomputes the tarball's SHA-256, and reads the package name
-and version from the tarball. It records acceptance (`PASS`, `FAIL`, or
+and version from the tarball. It reads the job listing of every attempt of the
+run, including the current one. A failed query, a missing, empty or unreadable
+listing, missing pages, or jobs of another run or attempt leave acceptance
+`INCOMPLETE` with the attempt and its status, never an attempt without failures;
+the job results are still recorded. Each WorkBuddy cell's report must come from
+the attempt in which the cell last ran, identified through that listing: a cell
+that did not run again keeps its earlier report, and one that ran again without
+a new report is `INCOMPLETE` rather than using the older one. The report's schema,
+run, attempt, platform, Node.js version, channel, versions, download host and
+reference hash must match the run and the frozen release; only Linux may record a
+hash warning. It records acceptance (`PASS`, `FAIL`, or
 `INCOMPLETE`) and eligibility (`RELEASABLE`, `NOT_RELEASABLE`, or `UNCONFIRMED`)
 separately; the verdict is `PASS`, and the job succeeds, only when both pass. The
 `release-acceptance-record-attempt<N>` artifact keeps the verdict, both commits,
 the package file, artifact ID, artifact digest, and tarball SHA-256, the frozen
-client versions, each WorkBuddy cell's verified versions and the coverage report,
-the run with earlier attempts' unsuccessful jobs, and the previous release range.
+client versions, each WorkBuddy cell's verified versions, hashes and attempt and
+the coverage report, each attempt's status and unsuccessful jobs, and the
+previous release range.
 Each release acceptance has its own concurrency group and is never cancelled by
 another run. Upgrade suites install fixed earlier versions; upgrading from the
 previous release to the candidate is not exercised.
@@ -359,8 +378,7 @@ Publishing stays manual and must use the accepted file:
 1. Download the recorded package artifact from the accepted run. Do not rebuild;
    `make npm-publish-dry-run` builds a new package, not the accepted file.
 2. Confirm the file's SHA-256 against the record.
-3. Run `npm publish <file> --access public --tag latest` (`preview` for
-   prereleases).
+3. Run `npm publish <file> --access public --tag latest`.
 4. Compare `npm view @memorax/memorax-code@<version> dist.integrity dist.shasum`
    with the file's SHA-512 and SHA-1.
 5. Tag `v<version>` at the candidate commit and attach the same file and its
@@ -1148,8 +1166,9 @@ native matrix to succeed. Failed, cancelled, or unexpectedly skipped dependencie
 fail that check. Release acceptance and the WorkBuddy diagnostic report it with
 their mode, such as `WorkBuddy functional result (release-acceptance)`; the other
 manual modes skip it. Each cell also uploads a `workbuddy-report-*` artifact with
-its verified desktop and bundled CLI versions, channel, and download host for the
-release record. The aggregate also requires the release resolution and its
+its run and attempt, verified desktop and bundled CLI versions, channel, download
+host, and the reference and actual SHA-256 with their match or warning status, for
+the release record. The aggregate also requires the release resolution and its
 coverage report. A successful matrix
 can have degraded Windows coverage: its summary names the untested official
 latest and the selected older release instead of claiming latest coverage.

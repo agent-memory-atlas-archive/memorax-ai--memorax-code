@@ -136,7 +136,7 @@ test("Linux download evidence is retained only for explicit manual diagnosis, in
   assert.doesNotMatch(upload, /path:.*\*|\.headers|\.partial|\.download/);
 });
 
-test("each WorkBuddy cell records its verified versions for the release record, without paths or URLs", { skip: process.platform === "win32" }, async () => {
+test("each WorkBuddy cell records its verified versions, hashes and run attempt for the release record, without paths or URLs", { skip: process.platform === "win32" }, async () => {
   const native = job("workbuddy-native");
   const name = "      - name: Record the verified WorkBuddy versions for the release record\n";
   const step = native.split(name)[1]?.split(/\n      - /)[0];
@@ -147,24 +147,32 @@ test("each WorkBuddy cell records its verified versions for the release record, 
   const script = step.match(/^          node --input-type=module <<'NODE'\n([\s\S]*?)^          NODE$/m)?.[1]
     .split("\n").map((line) => line.slice(10)).join("\n");
   assert.ok(script);
-  const root = await realpath(await mkdtemp(join(tmpdir(), "workbuddy-report-")));
-  try {
-    await writeFile(join(root, "workbuddy-bundle.json"), JSON.stringify({ desktopVersion: "5.7.0.40000000", runtimeVersion: "2.160.1",
-      arch: "x64", command: "extracted/opt/WorkBuddy/cli/bin/codebuddy", file: "WorkBuddy.deb", sha256: "a".repeat(64) }));
-    await writeFile(join(root, "workbuddy-release.json"), JSON.stringify({ ...baselineRelease("linux-x64-deb"), channel: "latest", runtimeVersion: null }));
-    const result = spawnSync(process.execPath, ["--input-type=module", "-"], { input: script, cwd: root, encoding: "utf8", timeout: 5_000,
-      env: { RUNNER_TEMP: root, HOME: root, WORKBUDDY_OS: "ubuntu-24.04", WORKBUDDY_NODE: "24", WORKBUDDY_CHANNEL: "latest" } });
-    assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(JSON.parse(await readFile(join(root, "workbuddy-report", "report.json"), "utf8")), { schemaVersion: 1,
-      os: "ubuntu-24.04", node: "24", channel: "latest", desktopVersion: "5.7.0.40000000", runtimeVersion: "2.160.1",
-      arch: "x64", source: new URL(baselineRelease("linux-x64-deb").url).host });
-  } finally {
-    await rm(root, { recursive: true, force: true });
+  const release = { ...baselineRelease("linux-x64-deb"), channel: "latest", runtimeVersion: null };
+  // Linux keeps a differing download with a warning; the report records both hashes and the status.
+  for (const [actual, status] of [[release.sha256.toUpperCase(), "match"], ["e".repeat(64), "warning"]]) {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "workbuddy-report-")));
+    try {
+      await writeFile(join(root, "workbuddy-bundle.json"), JSON.stringify({ desktopVersion: "5.7.0.40000000", runtimeVersion: "2.160.1",
+        arch: "x64", command: "extracted/opt/WorkBuddy/cli/bin/codebuddy", file: "WorkBuddy.deb", sha256: actual }));
+      await writeFile(join(root, "workbuddy-release.json"), JSON.stringify(release));
+      const result = spawnSync(process.execPath, ["--input-type=module", "-"], { input: script, cwd: root, encoding: "utf8", timeout: 5_000,
+        env: { RUNNER_TEMP: root, HOME: root, GITHUB_RUN_ID: "39203658997", GITHUB_RUN_ATTEMPT: "2",
+          WORKBUDDY_OS: "ubuntu-24.04", WORKBUDDY_NODE: "24", WORKBUDDY_CHANNEL: "latest" } });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(JSON.parse(await readFile(join(root, "workbuddy-report", "report.json"), "utf8")), { schemaVersion: 2,
+        runId: "39203658997", runAttempt: 2, os: "ubuntu-24.04", node: "24", channel: "latest", desktopVersion: "5.7.0.40000000",
+        runtimeVersion: "2.160.1", arch: "x64", source: new URL(release.url).host,
+        sha256: { reference: release.sha256, actual: actual.toLowerCase(), status } });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   }
   const upload = native.split("      - uses: actions/upload-artifact@v4\n").at(-1);
   assert.match(upload, /^        if: always\(\)$/m);
   assert.match(upload, /^          name: workbuddy-report-\$\{\{ matrix\.os \}\}-\$\{\{ matrix\.release\.channel \}\}-node-\$\{\{ matrix\.node \}\}-attempt\$\{\{ github\.run_attempt \}\}$/m);
   assert.match(upload, /^          path: \$\{\{ runner\.temp \}\}\/workbuddy-report\/report\.json$/m);
+  // The release record finds each cell's job by this name in the attempts API.
+  assert.match(native, /^    name: WorkBuddy native \(\$\{\{ matrix\.os \}\}, Node \$\{\{ matrix\.node \}\}, \$\{\{ matrix\.release\.channel \}\}, \$\{\{ matrix\.release\.desktopVersion \}\}\)$/m);
 });
 
 test("WorkBuddy macOS verifies the selected archive type before common application gates", () => {

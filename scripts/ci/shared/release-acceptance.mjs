@@ -9,20 +9,24 @@ import { pathToFileURL } from "node:url";
 
 export const PACKAGE_NAME = "@memorax/memorax-code";
 const REGISTRY_URL = `https://registry.npmjs.org/${PACKAGE_NAME.replace("/", "%2F")}`;
-const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/;
+// Release acceptance supports stable versions only; a valid prerelease or build version is refused, never compared.
+const STABLE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const SEMVER = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const COMMIT = /^[0-9a-f]{40}$/;
 const SCHEMA = 1;
 // Jobs whose results decide acceptance; each result job already requires its whole matrix.
 export const REQUIRED_JOBS = ["candidate", "basic-checks", "package", "workbuddy-releases", "functional-result",
   "opencode-result", "claude-result", "codebuddy-result", "cursor-app-result", "workbuddy-result"];
 const CLIENTS = { codex: "codex", opencode: "opencode", claude: "claude", codebuddy: "codebuddy", cursor: "cursor" };
+const UNSUCCESSFUL = ["failure", "cancelled", "timed_out"];
 
-function compareVersions(left, right) {
-  const parse = (value) => value.split("-")[0].split(".").map(Number);
-  const [a, b] = [parse(left), parse(right)];
+export function compareStable(left, right) {
+  const [a, b] = [left, right].map((value) => STABLE.exec(value)?.slice(1).map(Number));
+  if (!a || !b) throw new Error("VERSION_NOT_STABLE");
   for (let index = 0; index < 3; index += 1) if (a[index] !== b[index]) return a[index] > b[index] ? 1 : -1;
   return 0;
 }
+const newestStable = (versions) => [...versions].sort((left, right) => compareStable(right, left))[0] ?? null;
 
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -38,7 +42,8 @@ function versionsConsistent(root) {
   return spawnSync(process.execPath, ["scripts/sync-release-version.mjs", "--check"], { cwd: root, encoding: "utf8", timeout: 60_000 }).status === 0;
 }
 
-// Read whether this exact version was ever published. A failed or unreadable query never counts as unpublished.
+// Read whether this exact version was ever published and npm's stable release history. A failed or unreadable query
+// never counts as unpublished.
 export async function npmPublication(version, { fetchImpl = fetch, timeoutMs = 20_000 } = {}) {
   let response;
   try {
@@ -46,7 +51,7 @@ export async function npmPublication(version, { fetchImpl = fetch, timeoutMs = 2
   } catch {
     return { status: "UNCONFIRMED", reason: "NPM_QUERY_FAILED" };
   }
-  if (response.status === 404) return { status: "NOT_PUBLISHED", latest: null };
+  if (response.status === 404) return { status: "NOT_PUBLISHED", latest: null, stableVersions: [] };
   if (response.status !== 200) return { status: "UNCONFIRMED", reason: "NPM_QUERY_FAILED", httpStatus: response.status };
   let document;
   try {
@@ -58,10 +63,12 @@ export async function npmPublication(version, { fetchImpl = fetch, timeoutMs = 2
     return { status: "UNCONFIRMED", reason: "NPM_RESPONSE_INVALID" };
   }
   const latest = SEMVER.test(document["dist-tags"]?.latest ?? "") ? document["dist-tags"].latest : null;
-  if (Object.hasOwn(document.versions, version)) return { status: "PUBLISHED", latest };
+  // Prerelease versions are outside the release history that latest follows.
+  const stableVersions = Object.keys(document.versions).filter((item) => STABLE.test(item)).sort(compareStable);
+  if (Object.hasOwn(document.versions, version)) return { status: "PUBLISHED", latest, stableVersions };
   // npm never reuses an unpublished version number.
-  if (document.time && Object.hasOwn(document.time, version)) return { status: "PREVIOUSLY_PUBLISHED", latest };
-  return { status: "NOT_PUBLISHED", latest };
+  if (document.time && Object.hasOwn(document.time, version)) return { status: "PREVIOUSLY_PUBLISHED", latest, stableVersions };
+  return { status: "NOT_PUBLISHED", latest, stableVersions };
 }
 
 export async function collectCandidate({ root, sha, ref, expectedSha = "", runGit = gitRunner(root),
@@ -69,7 +76,9 @@ export async function collectCandidate({ root, sha, ref, expectedSha = "", runGi
   const reasons = [], unconfirmed = [], notes = [];
   const packageJson = JSON.parse(readFileSync(join(root, "packages/npm/memorax-code/package.json"), "utf8"));
   const version = packageJson.version;
+  const stable = STABLE.test(version);
   if (packageJson.name !== PACKAGE_NAME || !SEMVER.test(version)) reasons.push("PACKAGE_IDENTITY_INVALID");
+  else if (!stable) reasons.push("PRERELEASE_NOT_SUPPORTED");
   if (ref !== "refs/heads/main") reasons.push("REF_NOT_MAIN");
   const expected = expectedSha.trim().toLowerCase();
   if (expected && !COMMIT.test(expected)) reasons.push("EXPECTED_SHA_INVALID");
@@ -86,16 +95,18 @@ export async function collectCandidate({ root, sha, ref, expectedSha = "", runGi
     const tag = runGit(["rev-parse", "-q", "--verify", `refs/tags/v${version}^{commit}`]);
     if (tag.status === 0) reasons.push("TAG_EXISTS");
     else if (tag.status !== 1) throw new Error("GIT_QUERY_FAILED");
-    const merged = runGit(["tag", "--merged", sha, "--list", "v*", "--sort=-version:refname"]);
+    const merged = runGit(["tag", "--merged", sha, "--list", "v*"]);
     if (merged.status !== 0) throw new Error("GIT_QUERY_FAILED");
-    const previous = merged.stdout.split("\n").find((name) => name && name !== `v${version}` && SEMVER.test(name.slice(1)));
+    // Only stable tags are release history; prerelease tags are neither previous releases nor compared.
+    const releases = merged.stdout.split("\n").filter((name) => name !== `v${version}` && STABLE.test(name.slice(1)));
+    const previous = releases.sort((left, right) => compareStable(right.slice(1), left.slice(1)))[0];
     if (previous) {
       const commit = runGit(["rev-list", "-n", "1", previous]);
       const count = runGit(["rev-list", "--count", `${previous}..${sha}`]);
       const subjects = runGit(["log", "--first-parent", "--format=%s", `${previous}..${sha}`]);
       if ([commit, count, subjects].some((result) => result.status !== 0)) throw new Error("GIT_QUERY_FAILED");
       previousRelease = { tag: previous, sha: commit.stdout, version: previous.slice(1) };
-      if (compareVersions(previousRelease.version, version) >= 0) reasons.push("VERSION_NOT_INCREASED");
+      if (stable && compareStable(previousRelease.version, version) >= 0) reasons.push("VERSION_NOT_INCREASED");
       const pullRequests = [...subjects.stdout.matchAll(/^Merge pull request #(\d+) /gm)].map((match) => Number(match[1]));
       range = { from: previous, commits: Number(count.stdout), pullRequests };
       docsBase = { sha: commit.stdout, source: "previous-release" };
@@ -112,7 +123,14 @@ export async function collectCandidate({ root, sha, ref, expectedSha = "", runGi
   if (npm.status === "PUBLISHED") reasons.push("VERSION_ALREADY_PUBLISHED");
   else if (npm.status === "PREVIOUSLY_PUBLISHED") reasons.push("VERSION_PREVIOUSLY_PUBLISHED");
   else if (npm.status === "UNCONFIRMED") unconfirmed.push(npm.reason);
-  if (npm.latest && previousRelease && npm.latest !== previousRelease.version) notes.push("NPM_LATEST_DIFFERS_FROM_PREVIOUS_RELEASE");
+  // npm's stable releases must agree with the candidate's release history, so publishing it as latest can neither move
+  // latest backwards nor skip a release this history does not contain.
+  if (stable && npm.status !== "UNCONFIRMED") {
+    const newestOther = newestStable(npm.stableVersions.filter((item) => item !== version));
+    if (newestOther && compareStable(newestOther, version) > 0) reasons.push("NPM_NEWER_VERSION_PUBLISHED");
+    if (!unconfirmed.includes("GIT_QUERY_FAILED") && newestOther !== (previousRelease?.version ?? null)) reasons.push("NPM_HISTORY_MISMATCH");
+    if (newestStable(npm.stableVersions) !== npm.latest) reasons.push("NPM_LATEST_NOT_NEWEST");
+  }
 
   const status = reasons.length ? "NOT_RELEASABLE" : unconfirmed.length ? "UNCONFIRMED" : "RELEASABLE";
   return {
@@ -135,6 +153,9 @@ const sha256File = (path) => createHash("sha256").update(readFileSync(path)).dig
 const digestHex = (value) => /^(?:sha256:)?([a-f0-9]{64})$/.exec(String(value ?? ""))?.[1] ?? null;
 const parseJson = (value) => {
   try { return JSON.parse(value); } catch { return null; }
+};
+const hostOf = (url) => {
+  try { return new URL(url).host; } catch { return null; }
 };
 
 function matrixRows(value) {
@@ -178,22 +199,60 @@ function verifyPackage({ outputs, candidate, packageDir, artifact, runId }, fail
   return record;
 }
 
-// Pick each WorkBuddy cell's report from the latest attempt that produced one.
-function workbuddyCells(rows, reportsDir, fail, incomplete) {
-  const directories = existsSync(reportsDir) ? readdirSync(reportsDir) : [];
+// The job name the workflow gives each WorkBuddy cell; the attempts API identifies cells only by name.
+const workbuddyJobName = (row) => `WorkBuddy native (${row.os}, Node ${row.node}, ${row.release?.channel}, ${row.release?.desktopVersion})`;
+
+// The attempt in which a cell last ran. A job carried into a later attempt keeps its start time and runner, while a job
+// that ran again gets new ones. Without every attempt's complete listing the attempt is unknown.
+function lastRunAttempt(name, attempts) {
+  if (!attempts.length || attempts.some((entry) => entry.status !== "COMPLETE")) return null;
+  const records = attempts.map((entry) => entry.jobs?.find((job) => job.name === name) ?? null);
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    const [job, before] = [records[index], records[index - 1]];
+    if (!job) return null;
+    if (!before || job.started_at !== before.started_at || job.runner_id !== before.runner_id) return attempts[index].attempt;
+  }
+  return null;
+}
+
+// Each cell's report must come from the attempt in which the cell last ran: a cell that did not run again keeps its
+// earlier report, and a cell that ran again never falls back to an older one.
+function workbuddyCells(rows, reportsDir, attempts, env, fail, incomplete) {
   return (rows ?? []).map((row) => {
-    const prefix = `workbuddy-report-${row.os}-${row.release?.channel}-node-${row.node}-attempt`;
-    const latest = directories.filter((name) => name.startsWith(prefix) && /^\d+$/.test(name.slice(prefix.length)))
-      .sort((left, right) => Number(right.slice(prefix.length)) - Number(left.slice(prefix.length)))[0];
-    const report = latest ? parseJson(existsSync(join(reportsDir, latest, "report.json")) ? readFileSync(join(reportsDir, latest, "report.json"), "utf8") : "") : null;
-    const cell = { os: row.os, node: row.node, channel: row.release?.channel, desktopVersion: row.release?.desktopVersion,
-      runtimeVersion: null, arch: null, source: null, report: latest ?? null };
-    if (!report || !/^\d+\.\d+\.\d+$/.test(report.runtimeVersion ?? "") || !/^\d+\.\d+\.\d+\.\d+$/.test(report.desktopVersion ?? "")) {
+    const release = row.release ?? {};
+    const cell = { os: row.os, node: row.node, channel: release.channel, desktopVersion: release.desktopVersion,
+      runtimeVersion: null, arch: null, source: null, sha256: null, attempt: null, report: null };
+    const attempt = lastRunAttempt(workbuddyJobName(row), attempts);
+    if (!attempt) {
+      incomplete("WORKBUDDY_ATTEMPT_UNKNOWN");
+      return cell;
+    }
+    const name = `workbuddy-report-${row.os}-${release.channel}-node-${row.node}-attempt${attempt}`;
+    const path = join(reportsDir ?? "", name, "report.json");
+    Object.assign(cell, { attempt, report: name });
+    if (!reportsDir || !existsSync(path)) {
       incomplete("WORKBUDDY_REPORT_MISSING");
       return cell;
     }
-    if (report.desktopVersion !== row.release?.desktopVersion) fail("WORKBUDDY_REPORT_MISMATCH");
-    return { ...cell, runtimeVersion: report.runtimeVersion, arch: report.arch ?? null, source: report.source ?? null };
+    const report = parseJson(readFileSync(path, "utf8"));
+    const hash = report?.sha256 ?? {};
+    const valid = report?.schemaVersion === 2 && /^\d+\.\d+\.\d+$/.test(report.runtimeVersion ?? "")
+      && /^[a-f0-9]{64}$/.test(hash.actual ?? "") && ["match", "warning"].includes(hash.status);
+    if (!valid) {
+      incomplete("WORKBUDDY_REPORT_INVALID");
+      return cell;
+    }
+    // Identity, versions and hashes must agree with the frozen release, this run and the attempt that ran the cell.
+    const matches = report.runId === String(env.GITHUB_RUN_ID) && report.runAttempt === attempt
+      && report.os === row.os && String(report.node) === String(row.node) && report.channel === release.channel
+      && report.desktopVersion === release.desktopVersion && (release.runtimeVersion == null || report.runtimeVersion === release.runtimeVersion)
+      && report.arch === row.arch && report.source === hostOf(release.url) && hash.reference === release.sha256
+      && hash.status === (hash.actual === hash.reference ? "match" : "warning");
+    if (!matches) fail("WORKBUDDY_REPORT_MISMATCH");
+    // Linux tolerates same-version rebuilds with a recorded warning; macOS and Windows require the hash before use.
+    else if (hash.status === "warning" && release.platform !== "linux-x64-deb") fail("WORKBUDDY_HASH_MISMATCH");
+    return { ...cell, runtimeVersion: report.runtimeVersion, arch: report.arch, source: report.source,
+      sha256: { reference: hash.reference, actual: hash.actual, status: hash.status } };
   });
 }
 
@@ -205,6 +264,13 @@ export function decideRelease({ needs, packageDir, workbuddyReportsDir, artifact
   for (const [id, result] of Object.entries(jobs)) {
     if (result === "failure") fail(`JOB_FAILED:${id}`);
     else if (result !== "success") incomplete(`JOB_NOT_SUCCESSFUL:${id}:${result}`);
+  }
+  // Every attempt of the run must be read completely; an unreadable attempt never counts as one without failures.
+  const runAttempt = Number(env.GITHUB_RUN_ATTEMPT);
+  if (!Number.isSafeInteger(runAttempt) || runAttempt < 1) incomplete("RUN_ATTEMPT_INVALID");
+  for (let attempt = 1; attempt <= runAttempt; attempt += 1) {
+    const status = attempts.find((entry) => entry.attempt === attempt)?.status ?? "MISSING";
+    if (status !== "COMPLETE") incomplete(`ATTEMPT_RECORD_${status}:${attempt}`);
   }
 
   const candidate = needs?.candidate?.result === "success" ? parseJson(needs.candidate.outputs?.record ?? "") : null;
@@ -222,7 +288,7 @@ export function decideRelease({ needs, packageDir, workbuddyReportsDir, artifact
   const workbuddyRows = matrixRows(needs?.["workbuddy-releases"]?.outputs?.matrix);
   if (!workbuddyRows) incomplete("CLIENT_VERSIONS_MISSING:workbuddy");
   clients.workbuddy = { coverage: needs?.["workbuddy-releases"]?.outputs?.coverage || null,
-    cells: workbuddyCells(workbuddyRows, workbuddyReportsDir, fail, incomplete) };
+    cells: workbuddyCells(workbuddyRows, workbuddyReportsDir, attempts, env, fail, incomplete) };
 
   const acceptance = issues.fail.size ? "FAIL" : issues.incomplete.size ? "INCOMPLETE" : "PASS";
   const eligibility = candidate?.eligibility ?? { status: "UNCONFIRMED", reasons: [], unconfirmed: ["CANDIDATE_RECORD_MISSING"] };
@@ -230,7 +296,6 @@ export function decideRelease({ needs, packageDir, workbuddyReportsDir, artifact
     : { RELEASABLE: "PASS", NOT_RELEASABLE: "NOT_RELEASABLE" }[eligibility.status] ?? "UNCONFIRMED";
   const version = candidate?.package?.version ?? null;
   const runUrl = `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`;
-  const distTag = version?.includes("-") ? "preview" : "latest";
   return {
     schemaVersion: SCHEMA, verdict,
     acceptance: { status: acceptance, jobs, issues: [...issues.fail, ...issues.incomplete] },
@@ -241,14 +306,14 @@ export function decideRelease({ needs, packageDir, workbuddyReportsDir, artifact
     previousRelease: candidate?.previousRelease ?? null, range: candidate?.range ?? null,
     npm: candidate?.npm ?? null, docsBase: candidate?.docsBase ?? null, notes: candidate?.notes ?? [],
     clients,
-    run: { id: env.GITHUB_RUN_ID, attempt: Number(env.GITHUB_RUN_ATTEMPT), url: runUrl,
-      earlierAttempts: attempts.map(({ attempt, jobs: list }) => ({ attempt,
-        unsuccessfulJobs: list.filter((job) => ["failure", "cancelled", "timed_out"].includes(job.conclusion)).map((job) => `${job.name}: ${job.conclusion}`) })) },
+    run: { id: env.GITHUB_RUN_ID, attempt: runAttempt, url: runUrl,
+      attempts: attempts.map(({ attempt, status, jobs: list }) => ({ attempt, status,
+        unsuccessfulJobs: list ? list.filter((job) => UNSUCCESSFUL.includes(job.conclusion)).map((job) => `${job.name}: ${job.conclusion}`) : null })) },
     upgradeCoverage: "Upgrade suites install fixed earlier MemoraX Code versions; upgrading from the previous release to this candidate is not exercised.",
     publish: verdict !== "PASS" ? [] : [
       `Download ${packageRecord.artifact.name} (artifact ${packageRecord.artifact.id}) from ${runUrl}; do not rebuild.`,
       `Confirm that sha256 of ${packageRecord.file} is ${packageRecord.sha256}.`,
-      `npm publish ${packageRecord.file} --access public --tag ${distTag}`,
+      `npm publish ${packageRecord.file} --access public --tag latest`,
       `Compare npm view ${PACKAGE_NAME}@${version} dist.integrity dist.shasum with the sha512 and sha1 of the same file.`,
       `Tag v${version} at ${candidate.candidateSha} and attach the same file and its SHA256SUMS to the GitHub Release.`,
     ],
@@ -267,13 +332,17 @@ function renderCandidate(record) {
 
 function renderRecord(record) {
   const listed = (values) => (values.length ? ` (${values.join(", ")})` : "");
+  const warnings = record.clients.workbuddy.cells.filter((cell) => cell.sha256?.status === "warning")
+    .map((cell) => `${cell.os} ${cell.channel} Node ${cell.node}`);
   return [`### Release acceptance: **${record.verdict}**`, "",
     `- Acceptance: **${record.acceptance.status}**${listed(record.acceptance.issues)}`,
     `- Eligibility: **${record.eligibility.status}**${listed([...record.eligibility.reasons, ...record.eligibility.unconfirmed])}`,
     `- Candidate: ${record.candidate ? `${record.candidate.version} at ${record.candidate.candidateSha}` : "not recorded"}`,
     `- Package: ${record.package.file ?? "not verified"}, tgz SHA-256 ${record.package.sha256 ?? "-"}; artifact ${record.package.artifact.name ?? "-"} (ID ${record.package.artifact.id ?? "-"}, digest ${record.package.artifact.digest ?? "-"})`,
     `- Previous release: ${record.previousRelease ? `${record.previousRelease.tag} at ${record.previousRelease.sha}` : "not found"}`,
+    `- Attempts: ${record.run.attempts.map((entry) => `${entry.attempt} ${entry.status}`).join(", ") || "none read"}`,
     `- WorkBuddy coverage: ${record.clients.workbuddy.coverage ?? "unavailable"}`,
+    `- WorkBuddy Linux hash warnings: ${warnings.length ? warnings.join(", ") : "none"}`,
     `- ${record.upgradeCoverage}`, "",
     record.verdict === "PASS" ? `Publish the accepted file manually:\n\n${record.publish.map((step, index) => `${index + 1}. ${step}`).join("\n")}\n`
       : "This run does not accept the candidate for delivery. Do not publish its package.\n", ""].join("\n");
@@ -289,12 +358,33 @@ function parseOptions(args) {
   return options;
 }
 
-function readAttempts(apiDir) {
-  if (!apiDir || !existsSync(apiDir)) return [];
-  return readdirSync(apiDir).map((name) => /^attempt-(\d+)\.json$/.exec(name)).filter(Boolean)
-    .map((match) => ({ attempt: Number(match[1]),
-      jobs: (parseJson(readFileSync(join(apiDir, match[0]), "utf8")) ?? []).flatMap((page) => page?.jobs ?? []) }))
-    .sort((left, right) => left.attempt - right.attempt);
+// Read one attempt's job listing as the release result wrote it. A failed query, a missing, empty, unreadable or partial
+// listing, or a listing of another run or attempt is reported as such and never read as an attempt without failures.
+function readListing(apiDir, attempt, runId) {
+  const path = join(apiDir ?? "", `attempt-${attempt}.json`);
+  if (apiDir && existsSync(join(apiDir, `attempt-${attempt}.failed`))) return { status: "QUERY_FAILED", jobs: null };
+  if (!apiDir || !existsSync(path)) return { status: "MISSING", jobs: null };
+  const text = readFileSync(path, "utf8");
+  if (!text.trim()) return { status: "EMPTY", jobs: null };
+  const pages = parseJson(text);
+  if (!Array.isArray(pages) || !pages.length || !pages.every((page) => Array.isArray(page?.jobs) && Number.isSafeInteger(page.total_count))) {
+    return { status: "INVALID", jobs: null };
+  }
+  const jobs = pages.flatMap((page) => page.jobs);
+  const total = pages[0].total_count;
+  if (total < 1 || pages.some((page) => page.total_count !== total)) return { status: "INCOMPLETE", jobs: null };
+  // Every page was read: the listing holds exactly total_count distinct jobs.
+  if (jobs.length !== total || new Set(jobs.map((job) => job?.id)).size !== total) return { status: "INCOMPLETE", jobs: null };
+  if (jobs.some((job) => typeof job?.name !== "string" || job.run_attempt !== attempt || String(job.run_id) !== String(runId))) {
+    return { status: "MISMATCH", jobs: null };
+  }
+  return { status: "COMPLETE", jobs };
+}
+
+export function readAttempts(apiDir, runAttempt, runId) {
+  const attempts = [];
+  for (let attempt = 1; attempt <= runAttempt; attempt += 1) attempts.push({ attempt, ...readListing(apiDir, attempt, runId) });
+  return attempts;
 }
 
 export async function runCli(args, env = process.env) {
@@ -314,7 +404,7 @@ export async function runCli(args, env = process.env) {
       record = decideRelease({
         needs: parseJson(env.NEEDS_JSON ?? "") ?? {}, packageDir: options["package-dir"], workbuddyReportsDir: options["workbuddy-reports"],
         artifact: artifactPath && existsSync(artifactPath) ? parseJson(readFileSync(artifactPath, "utf8")) : null,
-        attempts: readAttempts(options["api-dir"]), env,
+        attempts: readAttempts(options["api-dir"], Number(env.GITHUB_RUN_ATTEMPT), env.GITHUB_RUN_ID), env,
       });
     } catch (error) {
       record = { schemaVersion: SCHEMA, verdict: "INCOMPLETE", acceptance: { status: "INCOMPLETE", issues: [`RECORD_FAILED:${error.code ?? error.name}`] } };

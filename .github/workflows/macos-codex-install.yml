@@ -824,11 +824,15 @@ jobs:
           const temp = process.env.RUNNER_TEMP;
           const bundle = JSON.parse(readFileSync(join(temp, 'workbuddy-bundle.json'), 'utf8'));
           const release = JSON.parse(readFileSync(join(temp, 'workbuddy-release.json'), 'utf8'));
+          // Linux records the downloaded hash and only warns on a difference; macOS and Windows stop before use unless it matches.
+          const actual = String(bundle.sha256).toLowerCase();
           mkdirSync(join(temp, 'workbuddy-report'), { recursive: true });
-          writeFileSync(join(temp, 'workbuddy-report', 'report.json'), `${JSON.stringify({ schemaVersion: 1,
+          writeFileSync(join(temp, 'workbuddy-report', 'report.json'), `${JSON.stringify({ schemaVersion: 2,
+            runId: process.env.GITHUB_RUN_ID, runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
             os: process.env.WORKBUDDY_OS, node: process.env.WORKBUDDY_NODE, channel: process.env.WORKBUDDY_CHANNEL,
             desktopVersion: bundle.desktopVersion, runtimeVersion: bundle.runtimeVersion, arch: bundle.arch,
-            source: new URL(release.url).host }, null, 2)}\n`);
+            source: new URL(release.url).host,
+            sha256: { reference: release.sha256, actual, status: actual === release.sha256 ? 'match' : 'warning' } }, null, 2)}\n`);
           NODE
       - name: Run strict native WorkBuddy suites with isolated local services (macOS/Linux)
         id: native-posix
@@ -1155,20 +1159,30 @@ jobs:
         with:
           pattern: workbuddy-report-*
           path: ${{ runner.temp }}/workbuddy-reports
-      - name: Read the candidate artifact record and earlier attempts
+      - name: Read the candidate artifact record and every attempt's jobs
         continue-on-error: true
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           PACKAGE_ARTIFACT_ID: ${{ needs.package.outputs.package-artifact-id }}
         run: |
-          mkdir -p "$RUNNER_TEMP/release-api"
-          if [[ "$PACKAGE_ARTIFACT_ID" =~ ^[0-9]+$ ]]; then
-            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$PACKAGE_ARTIFACT_ID" > "$RUNNER_TEMP/release-api/artifact.json"
+          api="$RUNNER_TEMP/release-api"
+          mkdir -p "$api"
+          if [[ "$PACKAGE_ARTIFACT_ID" =~ ^[0-9]+$ ]] \
+            && gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$PACKAGE_ARTIFACT_ID" > "$api/artifact.partial"; then
+            mv "$api/artifact.partial" "$api/artifact.json"
+          else
+            rm -f "$api/artifact.partial"
           fi
-          for (( attempt = 1; attempt < GITHUB_RUN_ATTEMPT; attempt++ )); do
-            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$attempt/jobs?per_page=100" \
-              > "$RUNNER_TEMP/release-api/attempt-$attempt.json"
+          # Each attempt is written only after every page was read; a failed query leaves a marker, never a listing.
+          for (( attempt = 1; attempt <= GITHUB_RUN_ATTEMPT; attempt++ )); do
+            if gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$attempt/jobs?per_page=100" \
+              > "$api/attempt-$attempt.partial"; then
+              mv "$api/attempt-$attempt.partial" "$api/attempt-$attempt.json"
+            else
+              rm -f "$api/attempt-$attempt.partial"
+              : > "$api/attempt-$attempt.failed"
+            fi
           done
       - name: Decide the release acceptance and write its record
         shell: bash

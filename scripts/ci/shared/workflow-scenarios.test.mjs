@@ -277,6 +277,34 @@ test("release acceptance calls the basic checks with explicit inputs and reads t
   for (const block of blocks) assert.doesNotMatch(block, /\$\{\{ inputs\./);
 });
 
+test("the release result reads every attempt and marks a failed read instead of writing a listing", { skip: process.platform === "win32" }, async (t) => {
+  const result = Object.fromEntries(jobs(workflows.native).map((job) => [job.id, job.text]))["release-result"];
+  const step = result.split("      - name: Read the candidate artifact record and every attempt's jobs\n")[1]?.split("\n      - ")[0];
+  assert.ok(step);
+  assert.match(step, /^        continue-on-error: true$/m);
+  const script = step.split("\n        run: |\n")[1].split("\n").map((line) => line.slice(10)).join("\n");
+  const root = await mkdtemp(join(tmpdir(), "release-api-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  // A stand-in for gh: attempt 2's pages cannot all be read and the artifact query fails after writing output.
+  const gh = [
+    'gh() {',
+    '  case "$*" in',
+    '    *attempts/2/jobs*) printf \'[{"total_count":2,"jobs":[\'; return 1 ;;',
+    '    *attempts/*/jobs*) printf \'[{"total_count":1,"jobs":[{"id":1}]}]\' ;;',
+    '    *artifacts/*) printf \'{"message":"Server Error"}\'; return 1 ;;',
+    '  esac',
+    '}',
+  ].join("\n");
+  const run = spawnSync("/bin/bash", ["-e", "-o", "pipefail", "-c", `${gh}\n${script}`], { cwd: root, encoding: "utf8", timeout: 5_000,
+    env: { PATH: "/usr/bin:/bin", HOME: root, RUNNER_TEMP: root, PACKAGE_ARTIFACT_ID: "123", GITHUB_REPOSITORY: "memorax-ai/memorax-code",
+      GITHUB_RUN_ID: "999", GITHUB_RUN_ATTEMPT: "3" } });
+  assert.equal(run.status, 0, run.stderr);
+  const api = join(root, "release-api");
+  const { readdir } = await import("node:fs/promises");
+  assert.deepEqual((await readdir(api)).sort(), ["attempt-1.json", "attempt-2.failed", "attempt-3.json"]);
+  assert.equal(await readFile(join(api, "attempt-3.json"), "utf8"), '[{"total_count":1,"jobs":[{"id":1}]}]');
+});
+
 function runBlocks(source) {
   const blocks = [], lines = source.split("\n");
   for (let index = 0; index < lines.length; index += 1) {
