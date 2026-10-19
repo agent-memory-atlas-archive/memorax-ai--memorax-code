@@ -261,12 +261,11 @@ checks on Linux with Node.js 24:
   range so README checking does not silently skip for lack of a base ref.
   Manual runs compare the selected commit with its first parent.
 
-Both checks run without path filters and keep stable names. Protect `main` by
-requiring **Tests** and **Documentation** in GitHub branch protection, including
-administrator merges. This setting is managed separately from the workflow.
-Full package installation and real-client checks remain separate from these
-basic checks. Use the Install/artifacts profile below for packaging or lifecycle
-changes. These checks require no model, MemoraX, or Jev credentials.
+Both checks run without path filters and keep stable names. Full package
+installation and real-client checks remain separate from these basic checks.
+Use the Install/artifacts profile below for packaging or lifecycle changes.
+These checks require no model, MemoraX, or Jev credentials. Branch protection
+for `main` is described in [Merge Checks](#merge-checks).
 
 Choose checks by impact from the profiles below. For architecture changes,
 the [change-routing table](ARCHITECTURE.md#8-test-architecture-and-change-routing)
@@ -274,6 +273,45 @@ maps boundaries to owning tests and named profiles. Focused tests shorten the
 edit loop; complete all profiles required by the final change before handoff.
 Documentation edits also require the Documentation profile; CLI, lifecycle,
 and artifact changes require Install/artifacts in addition to affected suites.
+
+### Merge Checks
+
+The CI workflow and the
+[native client functional workflow](.github/workflows/macos-codex-install.yml)
+run on every pull request targeting `main`, including drafts, and on every push
+to `main`, without path or diff filters. Pull request runs report these eight
+checks, which together form the merge gate for `main`:
+
+| Check | Workflow | Covers |
+| --- | --- | --- |
+| `Tests` | CI | Basic regression suite |
+| `Documentation` | CI | Documentation contracts and README synchronization |
+| `WorkBuddy functional result` | CI | WorkBuddy package job and entire native matrix |
+| `Codex functional result` | Native client functional checks | Package job and entire Codex matrix |
+| `OpenCode functional result` | Native client functional checks | Package job and entire OpenCode matrix |
+| `Claude native smoke result` | Native client functional checks | Package job and entire Claude Code matrix |
+| `CodeBuddy functional result` | Native client functional checks | Package job and entire CodeBuddy Code matrix |
+| `Cursor App canary result` | Native client functional checks | Package job and entire Cursor App matrix |
+
+Each result job also runs after a dependency fails; failed, cancelled, or
+skipped dependencies fail it. Push and manual runs reuse only the `Tests` and
+`Documentation` names, whose jobs always execute. They add a `(main push)` or
+`(manual run)` suffix to the result names, and provider-only runs report
+`Codex provider-only result`. These results stay visible without being mistaken
+for pull request acceptance. In each workflow, a
+newer run cancels an older one only for the same pull request, for pushes to
+`main`, or for the same manual selection on the same ref.
+
+Protect `main` in GitHub branch protection by requiring these eight checks from
+GitHub Actions, requiring branches to be up to date before merging, requiring a
+pull request before merging, and including administrators. When `main` moves,
+update an open pull request to rerun both workflows on the new merge result.
+This setting is managed separately from the workflows. The `Tests` check runs
+`scripts/ci/shared/workflow-scenarios.test.mjs`. It evaluates the expressions
+these workflows use for triggers, job conditions, check names, and concurrency
+groups in each event and manual selection, and runs each result script against
+failed, cancelled, and skipped dependencies. It is a source contract, not a
+complete model of GitHub Actions execution.
 
 ### Verification Profiles
 
@@ -379,8 +417,8 @@ Native-client runners, helpers, and their adjacent tests are grouped under
 
 - `codex/`, `claude/`, `dsh/`, `opencode/`, and `cursor/` own each client's checks.
 - `codebuddy-workbuddy/` owns both clients' entrypoints and shared checks.
-- `shared/` owns cross-client cleanup tests, Windows user PATH utilities and the
-  first-failure evidence recorder.
+- `shared/` owns cross-client cleanup tests, Windows user PATH utilities, the
+  first-failure evidence recorder and the workflow scenario contract.
 
 Keep existing Make targets as the developer entrypoints. Repository-wide build,
 package, documentation, and release scripts remain directly in `scripts/`;
@@ -444,9 +482,10 @@ earlier failure as fixed. To keep evidence from a local run, set
 ### Codex Functional CI
 
 The [native client functional workflow](.github/workflows/macos-codex-install.yml)
-runs on pull requests, pushes to `main`, and manual dispatch. Reuse the basic
-`Tests` and `Documentation` jobs above; this workflow adds installed-package
-and native-client evidence. It does not copy the source regression suites.
+runs on pull requests targeting `main`, pushes to `main`, and manual dispatch.
+Reuse the basic `Tests` and `Documentation` jobs above; this workflow adds
+installed-package and native-client evidence. It does not copy the source
+regression suites.
 Its Ubuntu job runs `npm-package-check` to build and validate one npm artifact.
 The package check still runs the npm regressions. A regression failure is retained
 as its exit status while independent artifact checks continue. Only after those
@@ -1049,7 +1088,8 @@ requires the candidate's complete `npm-package-check`; every platform consumes
 that same validated artifact. Matrix failures do not cancel the other platforms.
 The `WorkBuddy functional result` check requires both the package and the entire
 native matrix to succeed. Failed, cancelled, or unexpectedly skipped dependencies
-fail that check; intentionally unselected manual runs skip it as well.
+fail that check. Manual runs that select WorkBuddy report it as
+`WorkBuddy functional result (manual run)`; other manual runs skip it.
 The aggregate also requires the resolver's coverage report. A successful matrix
 can have degraded Windows coverage: its summary names the untested official
 latest and the selected older release instead of claiming latest coverage.

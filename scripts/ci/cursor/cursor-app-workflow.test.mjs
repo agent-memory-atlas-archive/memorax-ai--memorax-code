@@ -56,7 +56,7 @@ test("Cursor App jobs retain normal triggers and exclude dedicated manual diagno
   assert.equal(selected("cursor-app", { cancelled: true }), false);
   assert.equal(selected("cursor-app-result", { ready: "false", cancelled: true }), true);
   const triggers = source.split("\njobs:\n")[0];
-  assert.match(triggers, /^  pull_request:$/m);
+  assert.match(triggers, /^  pull_request:\n    branches: \[main\]$/m);
   assert.match(triggers, /^  push:\n    branches: \[main\]$/m);
   assert.doesNotMatch(triggers, /paths(?:-ignore)?:/);
   assert.doesNotMatch(source, /check_cursor_.*_isolation|cursor-.*-proof|cursor-app.*isolation\.yml/);

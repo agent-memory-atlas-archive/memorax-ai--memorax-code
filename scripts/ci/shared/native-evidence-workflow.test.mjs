@@ -19,7 +19,7 @@ function step(id, predicate) {
 }
 
 test("the evidence change keeps every acceptance trigger, matrix and job timeout", () => {
-  assert.match(source, /^on:\n  workflow_dispatch:\n    inputs:\n      check_deepseek:[\s\S]*?\n      diagnose_opencode_initialization:[\s\S]*?\n  pull_request:\n  push:\n    branches: \[main\]\n/m);
+  assert.match(source, /^on:\n  workflow_dispatch:\n    inputs:\n      check_deepseek:[\s\S]*?\n      diagnose_opencode_initialization:[\s\S]*?\n  pull_request:\n    branches: \[main\]\n  push:\n    branches: \[main\]\n/m);
   for (const [id, client] of [["install", "codex"], ["opencode", "opencode"]]) {
     assert.match(job(id), new RegExp(`^      matrix: \\$\\{\\{ fromJSON\\(needs\\.package\\.outputs\\.${client}-matrix\\) \\}\\}$`, "m"));
     assert.match(job(id), /^    timeout-minutes: 30$/m);
