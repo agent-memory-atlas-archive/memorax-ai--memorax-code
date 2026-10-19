@@ -19,7 +19,7 @@ function step(id, predicate) {
 }
 
 test("the evidence change keeps every acceptance trigger, matrix and job timeout", () => {
-  assert.match(source, /^on:\n  workflow_dispatch:\n    inputs:\n      check_deepseek:[\s\S]*?\n      diagnose_opencode_initialization:[\s\S]*?\n  pull_request:\n    branches: \[main\]\n  push:\n    branches: \[main\]\n/m);
+  assert.match(source, /^on:\n  workflow_dispatch:\n    inputs:\n      mode:[\s\S]*?\n      expected_sha:[\s\S]*?\n  pull_request:\n    branches: \[main\]\n  push:\n    branches: \[main\]\n/m);
   for (const [id, client] of [["install", "codex"], ["opencode", "opencode"]]) {
     assert.match(job(id), new RegExp(`^      matrix: \\$\\{\\{ fromJSON\\(needs\\.package\\.outputs\\.${client}-matrix\\) \\}\\}$`, "m"));
     assert.match(job(id), /^    timeout-minutes: 30$/m);
@@ -81,14 +81,19 @@ for (const [id, client, version] of [["install", "codex", "codex"], ["opencode",
 
 test("every uploaded artifact is attempt-qualified and every package reader uses the package job outputs", () => {
   const uploads = source.split("uses: actions/upload-artifact@v4\n").slice(1).map((item) => item.split("\n      - ")[0]);
-  // Package, Cursor releases and input manifest; Codex and OpenCode evidence; two Cursor reports.
-  assert.equal(uploads.length, 7);
+  // Package, Cursor releases and input manifest; Codex and OpenCode evidence; two Cursor reports; WorkBuddy download
+  // evidence and version report; the release acceptance record.
+  assert.equal(uploads.length, 10);
   for (const upload of uploads) assert.match(upload, /^          name: .*\$\{\{ github\.run_attempt \}\}$/m);
   assert.doesNotMatch(source, /overwrite:/);
   const downloads = source.split("uses: actions/download-artifact@v4\n").slice(1).map((item) => item.split("\n      - ")[0]);
   const packageReaders = downloads.filter((item) => item.includes("path: dist/npm/tarballs"));
-  assert.equal(packageReaders.length, 6);
+  assert.equal(packageReaders.length, 7);
   for (const item of packageReaders) assert.match(item, /^          name: \$\{\{ needs\.package\.outputs\.package-artifact-name \}\}$/m);
+  // The release result reads the same candidate by its exact artifact ID instead of by name.
+  const releaseReaders = downloads.filter((item) => item.includes("artifact-ids:"));
+  assert.equal(releaseReaders.length, 1);
+  assert.match(releaseReaders[0], /^          artifact-ids: \$\{\{ needs\.package\.outputs\.package-artifact-id \}\}$/m);
   assert.match(job("cursor-app"), /^          name: \$\{\{ needs\.package\.outputs\.cursor-releases-artifact-name \}\}$/m);
   assert.doesNotMatch(source, /^\s+name: (?:memorax-code-package|cursor-app-releases)$/m);
 });

@@ -259,7 +259,8 @@ checks on Linux with Node.js 24:
   including language-specific edits. Reviewers verify that the content stays
   synchronized. The checkout includes Git history and an explicit comparison
   range so README checking does not silently skip for lack of a base ref.
-  Manual runs compare the selected commit with its first parent.
+  Manual runs compare the selected commit with its first parent; release
+  acceptance passes its own comparison base (see [Release Acceptance](#release-acceptance)).
 
 Both checks run without path filters and keep stable names. Full package
 installation and real-client checks remain separate from these basic checks.
@@ -286,7 +287,7 @@ checks, which together form the merge gate for `main`:
 | --- | --- | --- |
 | `Tests` | CI | Basic regression suite |
 | `Documentation` | CI | Documentation contracts and README synchronization |
-| `WorkBuddy functional result` | CI | WorkBuddy package job and entire native matrix |
+| `WorkBuddy functional result` | Native client functional checks | Package job, WorkBuddy release resolution and entire WorkBuddy matrix |
 | `Codex functional result` | Native client functional checks | Package job and entire Codex matrix |
 | `OpenCode functional result` | Native client functional checks | Package job and entire OpenCode matrix |
 | `Claude native smoke result` | Native client functional checks | Package job and entire Claude Code matrix |
@@ -294,13 +295,14 @@ checks, which together form the merge gate for `main`:
 | `Cursor App canary result` | Native client functional checks | Package job and entire Cursor App matrix |
 
 Each result job also runs after a dependency fails; failed, cancelled, or
-skipped dependencies fail it. Push and manual runs reuse only the `Tests` and
-`Documentation` names, whose jobs always execute. They add a `(main push)` or
-`(manual run)` suffix to the result names, and provider-only runs report
-`Codex provider-only result`. These results stay visible without being mistaken
-for pull request acceptance. In each workflow, a
+skipped dependencies fail it. Push, manual, and release acceptance runs reuse
+only the `Tests` and `Documentation` names, whose jobs always execute. Result
+names add `(main push)` or the manual mode, such as `(release-acceptance)`, and
+provider-only runs report `Codex provider-only result`. These results stay
+visible without being mistaken for pull request acceptance. In each workflow, a
 newer run cancels an older one only for the same pull request, for pushes to
-`main`, or for the same manual selection on the same ref.
+`main`, or for the same manual mode on the same ref; release acceptance runs
+are never cancelled.
 
 Protect `main` in GitHub branch protection by requiring these eight checks from
 GitHub Actions, requiring branches to be up to date before merging, requiring a
@@ -312,6 +314,59 @@ these workflows use for triggers, job conditions, check names, and concurrency
 groups in each event and manual selection, and runs each result script against
 failed, cancelled, and skipped dependencies. It is a source contract, not a
 complete model of GitHub Actions execution.
+
+### Release Acceptance
+
+Manual dispatch of the
+[native client functional workflow](.github/workflows/macos-codex-install.yml)
+defaults to `mode=release-acceptance`. It runs the complete acceptance for the
+dispatched commit: the CI workflow's `Tests` and `Documentation` jobs, called
+with an explicit purpose, candidate commit, and comparison base; the package
+job's single candidate tarball; and every client matrix, including WorkBuddy.
+The other modes, `provider-only`, `opencode-initialization-diagnostic`, and
+`workbuddy-download-diagnostic`, are isolated diagnostics and never accept a
+release.
+
+The `Release candidate` job records the dispatched commit as both the candidate
+and the test-script commit; an optional `expected_sha` must equal it. It records
+release eligibility separately from acceptance: the ref must be `main`, versions
+must be consistent, `CHANGELOG.md` needs a dated entry for the version, no
+`v<version>` tag may exist, the version must be newer than the previous release
+tag, and npm must show that the version was never published. A failed or
+unreadable npm query leaves eligibility unconfirmed rather than unpublished. The
+job also records the previous release tag, the commits and merged pull requests
+since it, and the README comparison base: the previous release commit, or the
+first parent when no release tag is reachable. Eligibility never decides which
+jobs run, so a dispatch from another branch still runs the complete acceptance
+and only reports `NOT_RELEASABLE`.
+
+`Release acceptance result` downloads the candidate by its artifact ID, confirms
+through the API that the artifact belongs to the run, has not expired, and has
+the recorded digest, recomputes the tarball's SHA-256, and reads the package name
+and version from the tarball. It records acceptance (`PASS`, `FAIL`, or
+`INCOMPLETE`) and eligibility (`RELEASABLE`, `NOT_RELEASABLE`, or `UNCONFIRMED`)
+separately; the verdict is `PASS`, and the job succeeds, only when both pass. The
+`release-acceptance-record-attempt<N>` artifact keeps the verdict, both commits,
+the package file, artifact ID, artifact digest, and tarball SHA-256, the frozen
+client versions, each WorkBuddy cell's verified versions and the coverage report,
+the run with earlier attempts' unsuccessful jobs, and the previous release range.
+Each release acceptance has its own concurrency group and is never cancelled by
+another run. Upgrade suites install fixed earlier versions; upgrading from the
+previous release to the candidate is not exercised.
+
+Publishing stays manual and must use the accepted file:
+
+1. Download the recorded package artifact from the accepted run. Do not rebuild;
+   `make npm-publish-dry-run` builds a new package, not the accepted file.
+2. Confirm the file's SHA-256 against the record.
+3. Run `npm publish <file> --access public --tag latest` (`preview` for
+   prereleases).
+4. Compare `npm view @memorax/memorax-code@<version> dist.integrity dist.shasum`
+   with the file's SHA-512 and SHA-1.
+5. Tag `v<version>` at the candidate commit and attach the same file and its
+   `SHA256SUMS` to the GitHub Release.
+
+These steps are a procedure, not a technical lock on other publishing paths.
 
 ### Verification Profiles
 
@@ -418,7 +473,8 @@ Native-client runners, helpers, and their adjacent tests are grouped under
 - `codex/`, `claude/`, `dsh/`, `opencode/`, and `cursor/` own each client's checks.
 - `codebuddy-workbuddy/` owns both clients' entrypoints and shared checks.
 - `shared/` owns cross-client cleanup tests, Windows user PATH utilities, the
-  first-failure evidence recorder and the workflow scenario contract.
+  first-failure evidence recorder, the workflow scenario contract and the
+  release acceptance record.
 
 Keep existing Make targets as the developer entrypoints. Repository-wide build,
 package, documentation, and release scripts remain directly in `scripts/`;
@@ -648,7 +704,7 @@ process cleanup. Reports contain safe case results, versions, effective
 policies, request counts, and evidence kinds; private homes, credentials, raw
 rollouts, model output, and Backend tokens are not uploaded.
 
-Manual dispatch can enable `check_deepseek` to run only the existing provider
+Manual dispatch with `mode=provider-only` runs only the existing provider
 connectivity check, skipping package and functional jobs. It uses the `test`
 environment's `LLM_BASE_URL`, `LLM_MODEL`, and `LLM_API_KEY`. PR and push events
 never run this paid job. It verifies a native text response and model/session
@@ -735,7 +791,7 @@ node scripts/ci/opencode/opencode-permissions-check.mjs PACKAGE_ROOT OPENCODE_EX
 ```
 
 For startup investigation, manual dispatch with
-`diagnose_opencode_initialization=true` runs only the package check and a
+`mode=opencode-initialization-diagnostic` runs only the package check and a
 Windows baseline diagnostic with a no-op plugin. After one separate online
 cache warmup, it compares the operating system and runner temporary locations
 at equal short and long path lengths, using four order-balanced rounds and
@@ -789,8 +845,8 @@ versions must match.
 
 The result requires the package job and every Claude smoke matrix job to
 succeed. Failed, cancelled, or skipped dependencies cannot pass it. Codex and
-OpenCode keep their separate results. Provider-only and OpenCode initialization
-diagnostic dispatches skip the Claude matrix and its result. The default runs
+OpenCode keep their separate results. The manual diagnostic modes skip the
+Claude matrix and its result. The default runs
 use no model login, live-provider credentials, or paid model calls.
 
 The lifecycle suite checks rejected setup input, real-terminal cancellation and
@@ -929,8 +985,8 @@ tracks without duplicates. Requested and installed CLI versions must match.
 
 The result requires both the package job and every CodeBuddy functional job to
 succeed; failed, cancelled, or skipped dependencies cannot pass it. Existing
-Codex, OpenCode, and Claude checks keep their independent results. Provider-only
-and OpenCode initialization diagnostic dispatches skip this matrix and result.
+Codex, OpenCode, and Claude checks keep their independent results. The manual
+diagnostic modes skip this matrix and result.
 
 Fresh npm installation and public command shims are prerequisites. The suites
 exercise real installed setup and lifecycle commands, CodeBuddy's managed global
@@ -1073,8 +1129,8 @@ They do not validate the desktop UI or login flow. The desktop application and
 bundled runtime have distinct versions. Do not substitute the independently
 installed CodeBuddy CLI for that runtime.
 
-The `CI` workflow runs WorkBuddy native checks automatically for pull requests
-targeting `main` and pushes to `main`, on `ubuntu-24.04` (x64), `macos-15`
+The native client functional workflow runs WorkBuddy native checks automatically
+for pull requests targeting `main`, pushes to `main`, and release acceptance, on `ubuntu-24.04` (x64), `macos-15`
 (arm64), and `windows-2025` (x64), using Node.js 24. Each platform runs its
 fixed baseline and the latest official desktop release resolved once for that
 run, subject to the narrow Windows fallback below. Identical full versions,
@@ -1082,15 +1138,19 @@ URLs, and checksums (advisory on Linux) share one `baseline+latest`
 job; a different desktop build still gets a separate job even if its bundled
 CLI version is unchanged. One additional Ubuntu job uses the minimum supported
 Node.js 20 with the fixed Linux baseline. All four to seven jobs run the complete
-default suites. Manual workflow runs
-retain the opt-in `diagnose_workbuddy` input; leaving it false runs only the base checks. It first
-requires the candidate's complete `npm-package-check`; every platform consumes
-that same validated artifact. Matrix failures do not cancel the other platforms.
+default suites. A separate job resolves the release matrix and runs the
+WorkBuddy contract tests without building a package; every platform consumes the
+package job's validated candidate, the same artifact as the other clients.
+Manual `mode=workbuddy-download-diagnostic` runs only the package and WorkBuddy
+jobs. Matrix failures do not cancel the other platforms.
 The `WorkBuddy functional result` check requires both the package and the entire
 native matrix to succeed. Failed, cancelled, or unexpectedly skipped dependencies
-fail that check. Manual runs that select WorkBuddy report it as
-`WorkBuddy functional result (manual run)`; other manual runs skip it.
-The aggregate also requires the resolver's coverage report. A successful matrix
+fail that check. Release acceptance and the WorkBuddy diagnostic report it with
+their mode, such as `WorkBuddy functional result (release-acceptance)`; the other
+manual modes skip it. Each cell also uploads a `workbuddy-report-*` artifact with
+its verified desktop and bundled CLI versions, channel, and download host for the
+release record. The aggregate also requires the release resolution and its
+coverage report. A successful matrix
 can have degraded Windows coverage: its summary names the untested official
 latest and the selected older release instead of claiming latest coverage.
 Each runner consumes the frozen release description. macOS and Windows require
@@ -1127,7 +1187,7 @@ extraction. A matching version is not a publisher signature or proof of
 identical contents; these checks run only on isolated CI runners without
 business credentials. macOS and Windows checksum and signature gates are unchanged.
 
-Manual `diagnose_workbuddy` runs retain each Linux download and a content-free
+`workbuddy-download-diagnostic` runs retain each Linux download and a content-free
 response report as a one-day artifact, including checksum warnings, for offline
 comparison. Normal PR and push runs do not retain these packages. Retained
 downloads are diagnostic evidence, not authenticated release artifacts. A Linux
