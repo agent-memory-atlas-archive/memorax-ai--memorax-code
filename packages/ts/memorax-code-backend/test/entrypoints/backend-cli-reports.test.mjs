@@ -193,7 +193,7 @@ test("adapter report output preserves all supported client labels and summary fi
     backend,
     codexAdapter: { ...readyAdapter, codexSkills: { status: "ok" } },
     claudeAdapter: { ...readyAdapter, claudeSkills: { status: "ok" } },
-    dshAdapter: { ...readyAdapter, integration: "plugin", version: "1.0.0", dshVersionTested: false },
+    dshAdapter: { ...readyAdapter, integration: "plugin", version: "1.0.0" },
     opencodeAdapter: { ...readyAdapter, integration: "plugin", opencodeSkills: { status: "ok" } },
     codebuddyAdapter: { ...readyAdapter, codebuddySkills: { status: "ok" }, codebuddyHooks: { status: "observed" } },
     workbuddyAdapter: { ...readyAdapter, codebuddySkills: { status: "ok" }, codebuddyHooks: { status: "observed" } },
@@ -202,7 +202,7 @@ test("adapter report output preserves all supported client labels and summary fi
   assert.deepEqual(output.split("\n").filter((line) => line.includes(" adapter:")), [
     "[MemoraX Code Backend]: Codex adapter: ok integration=hooks skills=ok",
     "[MemoraX Code Backend]: Claude adapter: ok integration=hooks skills=ok",
-    "[MemoraX Code Backend]: DSH adapter: ok integration=plugin version=1.0.0 tested=false",
+    "[MemoraX Code Backend]: DSH adapter: ok integration=plugin version=1.0.0",
     "[MemoraX Code Backend]: OpenCode adapter: ok integration=plugin skills=ok",
     "[MemoraX Code Backend]: CodeBuddy adapter: ok integration=hooks skills=ok hook-runtime=observed",
     "[MemoraX Code Backend]: WorkBuddy adapter: ok integration=hooks skills=ok hook-runtime=observed",

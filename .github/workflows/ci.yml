@@ -16,7 +16,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # A newer run cancels only an older run of the same purpose: one pull request, main pushes, or one manual selection on one ref.
+  group: ci-${{ github.event_name == 'workflow_dispatch' && (inputs.diagnose_workbuddy && 'manual-workbuddy' || 'manual-basic') || github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -33,7 +34,9 @@ jobs:
           node-version: '24'
           package-manager-cache: false
       - name: Verify WorkBuddy workflow contract
-        run: node --test scripts/workbuddy-workflow.test.mjs
+        run: node --test scripts/ci/codebuddy-workbuddy/workbuddy-workflow.test.mjs
+      - name: Verify workflow triggers, check names and concurrency
+        run: node --test scripts/ci/shared/workflow-scenarios.test.mjs
       - name: Run the existing regression suite
         shell: bash
         run: |
@@ -71,6 +74,7 @@ jobs:
     timeout-minutes: 20
     outputs:
       matrix: ${{ steps.releases.outputs.matrix }}
+      coverage: ${{ steps.releases.outputs.coverage }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -90,12 +94,12 @@ jobs:
           entry="$(node -p "require.resolve('yaml', { paths: [process.argv[1]] })" "$deps")"
           printf 'WORKBUDDY_YAML_MODULE=%s\n' "$entry" >> "$GITHUB_ENV"
       - name: Verify WorkBuddy and shared native test contracts
-        run: node --test scripts/codebuddy-*.test.mjs scripts/workbuddy-*.test.mjs
+        run: node --test scripts/ci/codebuddy-workbuddy/codebuddy-*.test.mjs scripts/ci/codebuddy-workbuddy/workbuddy-*.test.mjs
       - name: Resolve each platform's latest release once
         id: releases
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/workbuddy-release-matrix.mjs resolve
+        run: node scripts/ci/codebuddy-workbuddy/workbuddy-release-matrix.mjs resolve
       - name: Build and validate the candidate package
         shell: bash
         run: |
@@ -140,7 +144,7 @@ jobs:
           TMPDIR: ${{ runner.temp }}
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
-        run: node --test scripts/workbuddy-*.test.mjs
+        run: node --test scripts/ci/codebuddy-workbuddy/workbuddy-*.test.mjs
       - name: Validate the frozen release for this runner
         shell: bash
         env:
@@ -150,7 +154,7 @@ jobs:
           import assert from 'node:assert/strict';
           import { writeFileSync } from 'node:fs';
           import { join } from 'node:path';
-          import { validateRelease } from './scripts/workbuddy-release-matrix.mjs';
+          import { validateRelease } from './scripts/ci/codebuddy-workbuddy/workbuddy-release-matrix.mjs';
           const platforms = { linux: 'linux-x64-deb', darwin: 'darwin-arm64', win32: 'win32-x64-user' };
           assert.equal(process.arch, process.platform === 'darwin' ? 'arm64' : 'x64');
           const release = validateRelease(JSON.parse(process.env.RELEASE_JSON), platforms[process.platform]);
@@ -161,20 +165,27 @@ jobs:
         shell: bash
         run: |
           mkdir "$RUNNER_TEMP/workbuddy-bundle"
-          bash scripts/workbuddy-macos-bundle-check.sh "$RUNNER_TEMP/workbuddy-bundle" arm64 \
+          bash scripts/ci/codebuddy-workbuddy/workbuddy-macos-bundle-check.sh "$RUNNER_TEMP/workbuddy-bundle" arm64 \
             "$RUNNER_TEMP/workbuddy-release.json" > "$RUNNER_TEMP/workbuddy-bundle.json"
-      - name: Verify and mount the official application read-only
+      - name: Open the verified archive and validate the official application
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          image="$RUNNER_TEMP/workbuddy-bundle/WorkBuddy.dmg"
+          archive_name="$(node -e 'const f = require(process.argv[1]).file; if (!["WorkBuddy.dmg", "WorkBuddy.zip"].includes(f)) process.exit(1); process.stdout.write(f);' "$RUNNER_TEMP/workbuddy-bundle.json")"
+          image="$RUNNER_TEMP/workbuddy-bundle/$archive_name"
           mountpoint="$RUNNER_TEMP/workbuddy-bundle/mounted"
-          spctl --assess --type open --context context:primary-signature "$image" \
-            > "$RUNNER_TEMP/workbuddy-bundle/image-assessment.log" 2>&1
-          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mountpoint" "$image" \
-            > "$RUNNER_TEMP/workbuddy-bundle/mount.log" 2>&1
-          echo 'WORKBUDDY_IMAGE_ATTACHED=true' >> "$GITHUB_ENV"
+          if [[ "$archive_name" == WorkBuddy.dmg ]]; then
+            spctl --assess --type open --context context:primary-signature "$image" \
+              > "$RUNNER_TEMP/workbuddy-bundle/image-assessment.log" 2>&1
+            hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mountpoint" "$image" \
+              > "$RUNNER_TEMP/workbuddy-bundle/mount.log" 2>&1
+            echo 'WORKBUDDY_IMAGE_ATTACHED=true' >> "$GITHUB_ENV"
+          else
+            mkdir "$mountpoint"
+            ditto -x -k "$image" "$mountpoint" > "$RUNNER_TEMP/workbuddy-bundle/extract.log" 2>&1
+          fi
           app="$mountpoint/WorkBuddy.app"
+          [[ -d "$app" && ! -L "$app" ]]
           codesign --verify --deep --strict --all-architectures \
             --test-requirement '=identifier "com.tencent.workbuddy.mac" and anchor apple generic and certificate leaf[subject.OU] = "FN2V63AD2J"' \
             "$app" > "$RUNNER_TEMP/workbuddy-bundle/signature.log" 2>&1
@@ -209,10 +220,23 @@ jobs:
       - name: Acquire and extract the selected official Linux package
         if: runner.os == 'Linux'
         shell: bash
+        env:
+          WORKBUDDY_DOWNLOAD_DIAGNOSTIC_DIR: ${{ github.event_name == 'workflow_dispatch' && inputs.diagnose_workbuddy && format('{0}/workbuddy-download-diagnostic', runner.temp) || '' }}
         run: |
           mkdir "$RUNNER_TEMP/workbuddy-bundle"
-          bash scripts/workbuddy-linux-bundle-check.sh "$RUNNER_TEMP/workbuddy-bundle" x64 \
+          bash scripts/ci/codebuddy-workbuddy/workbuddy-linux-bundle-check.sh "$RUNNER_TEMP/workbuddy-bundle" x64 \
             "$RUNNER_TEMP/workbuddy-release.json" > "$RUNNER_TEMP/workbuddy-bundle.json"
+      - name: Retain Linux download evidence for manual diagnosis
+        if: always() && runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && inputs.diagnose_workbuddy
+        uses: actions/upload-artifact@v4
+        with:
+          name: workbuddy-linux-download-node-${{ matrix.node }}-${{ matrix.release.channel }}
+          path: |
+            ${{ runner.temp }}/workbuddy-download-diagnostic/WorkBuddy.deb
+            ${{ runner.temp }}/workbuddy-download-diagnostic/download.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
       - name: Acquire and extract the signed official Windows package
         if: runner.os == 'Windows'
         shell: pwsh
@@ -220,7 +244,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $destination = Join-Path $env:RUNNER_TEMP 'workbuddy-bundle'
           New-Item -ItemType Directory -Path $destination | Out-Null
-          $report = & ./scripts/workbuddy-windows-bundle-check.ps1 -Destination $destination -ReleaseFile (Join-Path $env:RUNNER_TEMP 'workbuddy-release.json')
+          $report = & ./scripts/ci/codebuddy-workbuddy/workbuddy-windows-bundle-check.ps1 -Destination $destination -ReleaseFile (Join-Path $env:RUNNER_TEMP 'workbuddy-release.json')
           if ($LASTEXITCODE -ne 0) { throw 'WorkBuddy package acquisition failed.' }
           $report | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'workbuddy-bundle.json') -Encoding utf8
       - name: Record the verified bundled runtime
@@ -254,11 +278,11 @@ jobs:
           env -i PATH="$PATH" HOME="$test_root/user" \
             MEMORAX_CODE_HOME="$test_root/state" \
             npm_config_cache="$test_root/npm-cache" TMPDIR="$test_root/tmp" \
-            node scripts/workbuddy-e2e.mjs dist/npm/tarballs "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" 0.1.18
+            node scripts/ci/codebuddy-workbuddy/workbuddy-e2e.mjs dist/npm/tarballs "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" 0.1.18
       - name: Verify shared Windows user PATH cleanup
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/codex-install-user-path.test.ps1
+        run: ./scripts/ci/shared/codex-install-user-path.test.ps1
       - name: Run strict native WorkBuddy suites with isolated local services (Windows)
         id: native-windows
         if: runner.os == 'Windows'
@@ -267,7 +291,7 @@ jobs:
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
         run: |
-          & node scripts/workbuddy-e2e.mjs dist/npm/tarballs $env:WORKBUDDY_BUNDLED_COMMAND $env:WORKBUDDY_RUNTIME_VERSION 0.1.18
+          & node scripts/ci/codebuddy-workbuddy/workbuddy-e2e.mjs dist/npm/tarballs $env:WORKBUDDY_BUNDLED_COMMAND $env:WORKBUDDY_RUNTIME_VERSION 0.1.18
           if ($LASTEXITCODE -ne 0) { throw 'WorkBuddy native suites failed; isolated state retained.' }
       - name: Unmount the owned WorkBuddy image
         if: always() && runner.os == 'macOS' && env.WORKBUDDY_IMAGE_ATTACHED == 'true'
@@ -283,7 +307,8 @@ jobs:
           printf '%s\n' 'Installation, setup interruption, Memory/Skill, four permission cases and Repo Memory worker configuration checks. The two explicit runtime interrupt cases are excluded and remain separate strict manual diagnostics. General runtime interruption, desktop UI and valid Repo Memory generation are not established. This result covers only the selected verified package and current runner; the entire platform, release and Node matrix must pass for an overall result.' >> "$GITHUB_STEP_SUMMARY"
 
   workbuddy-result:
-    name: WorkBuddy functional result
+    # Only pull request runs report the formal result name; push and manual runs add their purpose.
+    name: ${{ github.event_name == 'pull_request' && 'WorkBuddy functional result' || format('WorkBuddy functional result ({0})', github.event_name == 'push' && 'main push' || 'manual run') }}
     if: always() && (github.event_name != 'workflow_dispatch' || inputs.diagnose_workbuddy)
     needs: [workbuddy-package, workbuddy-native]
     runs-on: ubuntu-24.04
@@ -294,9 +319,14 @@ jobs:
         env:
           PACKAGE_RESULT: ${{ needs.workbuddy-package.result }}
           WORKBUDDY_RESULT: ${{ needs.workbuddy-native.result }}
+          WORKBUDDY_COVERAGE: ${{ needs.workbuddy-package.outputs.coverage }}
         run: |
-          printf 'Package: **%s**\n\nWorkBuddy matrix: **%s**\n\nVerified baseline/latest bundled runtimes; the two explicit runtime interrupt cases remain separate strict manual diagnostics.\n' "$PACKAGE_RESULT" "$WORKBUDDY_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Package: **%s**\n\nWorkBuddy matrix: **%s**\n\n%s\n\nThe two explicit runtime interrupt cases remain separate strict manual diagnostics.\n' "$PACKAGE_RESULT" "$WORKBUDDY_RESULT" "${WORKBUDDY_COVERAGE:-Coverage unavailable.}" >> "$GITHUB_STEP_SUMMARY"
           if [[ "$PACKAGE_RESULT" != success || "$WORKBUDDY_RESULT" != success ]]; then
             echo '::error::All package and WorkBuddy matrix jobs must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+            exit 1
+          fi
+          if [[ -z "$WORKBUDDY_COVERAGE" ]]; then
+            echo '::error::WorkBuddy release coverage is missing.'
             exit 1
           fi

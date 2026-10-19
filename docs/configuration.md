@@ -297,11 +297,30 @@ For npm-installed DSH, built-in bundle checks resolve from the selected DSH
 installation first, then the Profile module tree for legacy installations.
 A first session is not required to create `profiles/node_modules` before setup.
 
-MemoraX Code is tested with DSH `0.1.0-rc.6` and `0.1.2-rc.1`. Other valid semantic versions are
-accepted but appear as untested in status output; compatibility is not
-guaranteed. An unavailable or malformed `dsh --version` result fails Profile
+The reserved `desktop` Profile is managed through the installed Desktop
+application's own launcher, even when an npm CLI is also available. Open the
+Desktop application once to initialize that Profile, then fully quit it before
+plugin installation or removal. Desktop supplies its own package manager.
+An installation containing only Desktop can also supply the native launcher
+for the managed `headless` worker Profile.
+
+Set `MEMORAX_CODE_DSH_COMMAND` for the ordinary CLI and, when Desktop discovery
+needs an explicit path, set `MEMORAX_CODE_DSH_DESKTOP_COMMAND` to its bundled
+launcher. The lifecycle equivalents are `--dsh-command` and
+`--dsh-desktop-command`. Use the actual Desktop launcher, not an npm CLI or
+`npx`. The Desktop command and version are recorded separately from the CLI;
+changes require lifecycle reconciliation. Do not edit those private records.
+
+Status reports the installed CLI and Desktop versions alongside integration
+readiness. An unavailable or malformed `dsh --version` result fails Profile
 reconciliation when a Profile exists. Run `memorax-code start --clients dsh`
 after changing `DSH_HOME`, DSH, or its Profiles.
+
+Automatic memory handling supports native Session formats 0, 3, and 4. Unknown
+formats fail closed. If a Session records a native working-directory change,
+automatic memory handling stops for that Session, including after resume; start a
+new Session in the intended workspace. The immutable Session header cannot
+rebind an existing memory scope to its new effective directory.
 
 ## OpenCode integration paths
 

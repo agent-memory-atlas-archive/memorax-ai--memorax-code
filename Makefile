@@ -32,7 +32,7 @@ test-claude-adapter:
 	$(NPM) test --prefix packages/ts/memorax-code-claude-adapter
 
 test-claude-e2e: npm-package-check
-	node scripts/claude-e2e.mjs
+	node scripts/ci/claude/claude-e2e.mjs
 
 test-dsh-adapter:
 	$(NPM) test --prefix packages/ts/memorax-code-dsh-adapter
@@ -47,7 +47,7 @@ test-codebuddy-adapter:
 	$(NPM) test --prefix packages/ts/memorax-code-codebuddy-adapter
 
 test-codebuddy-e2e: npm-package-check
-	node scripts/codebuddy-e2e.mjs
+	node scripts/ci/codebuddy-workbuddy/codebuddy-e2e.mjs
 
 test-trae-adapter:
 	$(NPM) test --prefix packages/ts/memorax-code-trae-adapter
@@ -59,11 +59,11 @@ test-qoder-adapter:
 	$(NPM) test --prefix packages/ts/memorax-code-qoder-adapter
 
 test-opencode-e2e: npm-package-check
-	node scripts/opencode-e2e.mjs
+	node scripts/ci/opencode/opencode-e2e.mjs
 
 test-npm-package:
 	$(NPM) ci --prefix packages/ts/memorax-code-backend
-	node --test packages/npm/memorax-code/test/*.test.mjs scripts/check-local-trace-only.test.mjs
+	node --test packages/npm/memorax-code/test/*.test.mjs scripts/check-local-trace-only.test.mjs scripts/ci/dsh/*.test.mjs
 	node scripts/check-local-trace-only.mjs
 
 docs-check:

@@ -52,8 +52,9 @@ MemoraX Code 让 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harn
 CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae、Cursor 或 Qoder 中的至少一个。
 
 当前 DeepSeek Harness（DSH）版本要求 Node.js `^22.19.0 || >=24.0.0`。运行 setup 前，
-请先安装或初始化 DSH，创建至少一个 Profile，并确保 `pnpm` 在 `PATH` 中可用。
-MemoraX Code 不会安装或更新 DSH。
+请先安装或初始化 DSH，创建至少一个 Profile；使用 npm CLI 时，确保 `pnpm` 在 `PATH` 中可用。
+使用 DSH 桌面版时，请先打开一次以初始化 Profile，再完全退出以安装插件；MemoraX Code
+会调用桌面版内置的启动器和包管理器。CLI 与桌面版可以同时启用。MemoraX Code 不会安装或更新 DSH。
 
 Linux 下，游客凭据管理需要 libsecret 提供的 `/usr/bin/secret-tool`，以及当前用户会话中可用的
 Secret Service。使用 Remote SSH、WSL 或 Dev Container 时，请将 MemoraX Code 安装在

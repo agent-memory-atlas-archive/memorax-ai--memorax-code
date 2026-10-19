@@ -863,10 +863,19 @@ means neither the selected DSH command nor an existing Profile-linked DSH
 runtime supplied a valid semantic version. A `dsh_profile_runtime_stale` result
 means that Profile-linked package is invalid or its original package cache is
 no longer available. Repair or relaunch DSH itself, then rerun the MemoraX Code
-start command. MemoraX Code never invokes `npx` or installs or updates DSH. The
-tested versions are `0.1.0-rc.6` and `0.1.2-rc.1`; another valid version is allowed but marked
-untested. A `pnpm_not_found` result means DSH's native Profile plugin manager
+start command. MemoraX Code never invokes `npx` or installs or updates DSH. A
+`pnpm_not_found` result means DSH's native Profile plugin manager
 could not find `pnpm` on `PATH`; install `pnpm`, then rerun the start command.
+
+For Desktop, open the application once to initialize its reserved `desktop`
+Profile, then fully quit it before changing plugins. A
+`dsh_desktop_command_unavailable` result means its bundled launcher could not be
+validated. Restore the Desktop installation or set
+`MEMORAX_CODE_DSH_DESKTOP_COMMAND` to its native launcher; an npm CLI cannot
+manage this Profile. CLI and Desktop commands may point to different versions.
+`dsh_desktop_version_changed` means the pinned Desktop installation changed:
+run `memorax-code start --clients dsh` to reconcile its new version. Status
+reports the Desktop version separately.
 
 After repairing the command, Profile manifest, or home selection, rerun the
 start command and restart or refresh DSH. `profile_drift`,

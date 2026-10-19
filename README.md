@@ -57,8 +57,11 @@ Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, Cursor,
 
 For DeepSeek Harness (DSH), current releases require Node.js
 `^22.19.0 || >=24.0.0`. Install or initialize DSH first, create at least one
-Profile, and ensure `pnpm` is on `PATH` before running setup. MemoraX Code
-does not install or update DSH.
+Profile, and ensure `pnpm` is on `PATH` for npm CLI installations before running
+setup. For DSH Desktop, open it once to initialize its Profile, then fully quit
+it for plugin installation; MemoraX Code uses its bundled launcher and package
+manager. CLI and Desktop can be enabled together. MemoraX Code does not install
+or update DSH.
 
 On Linux, guest credentials require `/usr/bin/secret-tool` from
 libsecret and an available Secret Service in the current user session. For

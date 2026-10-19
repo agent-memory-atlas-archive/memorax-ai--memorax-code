@@ -262,12 +262,11 @@ checks on Linux with Node.js 24:
   range so README checking does not silently skip for lack of a base ref.
   Manual runs compare the selected commit with its first parent.
 
-Both checks run without path filters and keep stable names. Protect `main` by
-requiring **Tests** and **Documentation** in GitHub branch protection, including
-administrator merges. This setting is managed separately from the workflow.
-Full package installation and real-client checks remain separate from these
-basic checks. Use the Install/artifacts profile below for packaging or lifecycle
-changes. These checks require no model, MemoraX, or Jev credentials.
+Both checks run without path filters and keep stable names. Full package
+installation and real-client checks remain separate from these basic checks.
+Use the Install/artifacts profile below for packaging or lifecycle changes.
+These checks require no model, MemoraX, or Jev credentials. Branch protection
+for `main` is described in [Merge Checks](#merge-checks).
 
 Choose checks by impact from the profiles below. For architecture changes,
 the [change-routing table](ARCHITECTURE.md#8-test-architecture-and-change-routing)
@@ -275,6 +274,45 @@ maps boundaries to owning tests and named profiles. Focused tests shorten the
 edit loop; complete all profiles required by the final change before handoff.
 Documentation edits also require the Documentation profile; CLI, lifecycle,
 and artifact changes require Install/artifacts in addition to affected suites.
+
+### Merge Checks
+
+The CI workflow and the
+[native client functional workflow](.github/workflows/macos-codex-install.yml)
+run on every pull request targeting `main`, including drafts, and on every push
+to `main`, without path or diff filters. Pull request runs report these eight
+checks, which together form the merge gate for `main`:
+
+| Check | Workflow | Covers |
+| --- | --- | --- |
+| `Tests` | CI | Basic regression suite |
+| `Documentation` | CI | Documentation contracts and README synchronization |
+| `WorkBuddy functional result` | CI | WorkBuddy package job and entire native matrix |
+| `Codex functional result` | Native client functional checks | Package job and entire Codex matrix |
+| `OpenCode functional result` | Native client functional checks | Package job and entire OpenCode matrix |
+| `Claude native smoke result` | Native client functional checks | Package job and entire Claude Code matrix |
+| `CodeBuddy functional result` | Native client functional checks | Package job and entire CodeBuddy Code matrix |
+| `Cursor App canary result` | Native client functional checks | Package job and entire Cursor App matrix |
+
+Each result job also runs after a dependency fails; failed, cancelled, or
+skipped dependencies fail it. Push and manual runs reuse only the `Tests` and
+`Documentation` names, whose jobs always execute. They add a `(main push)` or
+`(manual run)` suffix to the result names, and provider-only runs report
+`Codex provider-only result`. These results stay visible without being mistaken
+for pull request acceptance. In each workflow, a
+newer run cancels an older one only for the same pull request, for pushes to
+`main`, or for the same manual selection on the same ref.
+
+Protect `main` in GitHub branch protection by requiring these eight checks from
+GitHub Actions, requiring branches to be up to date before merging, requiring a
+pull request before merging, and including administrators. When `main` moves,
+update an open pull request to rerun both workflows on the new merge result.
+This setting is managed separately from the workflows. The `Tests` check runs
+`scripts/ci/shared/workflow-scenarios.test.mjs`. It evaluates the expressions
+these workflows use for triggers, job conditions, check names, and concurrency
+groups in each event and manual selection, and runs each result script against
+failed, cancelled, and skipped dependencies. It is a source contract, not a
+complete model of GitHub Actions execution.
 
 ### Verification Profiles
 
@@ -318,8 +356,8 @@ prose accuracy or command behavior.
 
 Native Windows package smoke coverage lives in
 [windows-npm-package-e2e.mjs](scripts/windows-npm-package-e2e.mjs). The separate
-[Codex](scripts/windows-codex-e2e.mjs) and
-[Claude](scripts/windows-claude-e2e.mjs) runners use real clients for installation.
+[Codex](scripts/ci/codex/windows-codex-e2e.mjs) and
+[Claude](scripts/ci/claude/windows-claude-e2e.mjs) runners use real clients for installation.
 The older Claude runner supplies synthetic Hook inputs; it does not establish
 native conversation or transcript writeback. Inspect each script's prerequisites
 and isolation before using it; a macOS/Linux suite or
@@ -333,12 +371,123 @@ redact output, and explain any relevant checks not run. Public fixtures must nev
 real API keys, private transcripts, personal memory, or infrastructure
 credentials.
 
+### DSH Native Compatibility Checks
+
+The DSH adapter and Backend suites cover legacy Session formats and v4,
+producer-owned context sources, resume reconciliation, compaction, and CLI versus
+Desktop Profile management. Native lifecycle fixtures simulate launcher discovery
+and version drift; they do not establish Desktop GUI behavior.
+
+`MEMORAX_CODE_DSH_E2E=1 make test-dsh-e2e` runs the installed npm artifact against
+the pinned DSH release using isolated client and Backend homes, synthetic
+credentials, and local model and MemoraX services. Set
+`MEMORAX_CODE_DSH_E2E_VERSION` to an exact release when checking another version,
+and `MEMORAX_CODE_DSH_E2E_MEMORAX_TARBALL` to reuse a validated artifact.
+`MEMORAX_CODE_DSH_E2E_RUNTIME_PREFIX` may point to a separately prepared test npm
+prefix containing that exact DSH and mock-server version plus the pinned pnpm;
+only these runtime packages are reused, while all client and Backend state stays
+isolated. The runner
+checks native Turn writeback, excluded context and reasoning, interruption and
+resume, Backend recovery, Profile reconciliation, and stop/uninstall preservation.
+Failed runs retain their isolated directory and redacted process logs for diagnosis;
+successful runs remove it. Review retained artifacts before sharing them.
+Optional Office packages are omitted; this check does not qualify those features
+or the Desktop window. A failed newer-release check must not be reported as a pass
+based only on the older-version tests or adapter status.
+
+On macOS, check an official Desktop installation or read-only mounted distribution:
+
+```bash
+node scripts/ci/dsh/dsh-desktop-native-check.mjs \
+  --desktop-command "/path/to/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" \
+  --tarball "/path/to/memorax-code.tgz"
+```
+
+The runner creates isolated homes, initializes the reserved
+`desktop` Profile through the bundled runtime, installs and removes the plugin
+with the native launcher, and completes a v4 Turn using Electron and local mock
+services. It verifies clean QA writeback and stops the Backend during cleanup.
+Model execution is restricted to loopback connections. Use `--artifacts-dir` for
+an output directory outside the repository; review and redact local diagnostics
+before sharing. This check exercises the Desktop host runtime, not GUI interaction
+or native Windows behavior.
+
+### Native CI Script Layout
+
+Native-client runners, helpers, and their adjacent tests are grouped under
+`scripts/ci/`:
+
+- `codex/`, `claude/`, `dsh/`, `opencode/`, `cursor/`, and `qoder/` own each client's checks.
+- `codebuddy-workbuddy/` owns both clients' entrypoints and shared checks.
+- `shared/` owns cross-client cleanup tests, Windows user PATH utilities, the
+  first-failure evidence recorder and the workflow scenario contract.
+
+Keep existing Make targets as the developer entrypoints. Repository-wide build,
+package, documentation, and release scripts remain directly in `scripts/`;
+Cursor App image assets remain in `scripts/fixtures/cursor-app/`.
+
+### Native CI First-Failure Evidence
+
+The Codex and OpenCode functional jobs record first-failure evidence by default;
+the other clients keep their existing reports. The wrappers read
+`MEMORAX_CI_EVIDENCE_DIR` before clearing the environment, require an empty real
+directory outside the test runtime, and pass it only to the test runners; an
+unusable directory disables evidence without changing the result. They keep a
+ledger of the wrapper phase (`setup`, `suites`, `cleanup`) and of each planned
+suite (`PASS`, `FAIL`, `NOT_RUN`, `INCOMPLETE`, `SKIPPED_BY_DESIGN`); suite
+order, fail-fast behavior and assertions are unchanged. A GitHub `pwsh` step
+exits with `$LASTEXITCODE`, so the PowerShell evidence helpers restore it after
+every call. After their native suites and the evidence export, the Windows jobs
+run a CI tool self-test: both wrappers under real PowerShell with stub suites,
+failing ledger calls and an unusable evidence directory. It fails the job when
+any expected test fails or is skipped, and reports on its own summary line
+instead of in `testOutcome`.
+
+The Codex installation smoke and the OpenCode background Repo Memory case
+append a journal when their progress or key observations change, so records
+written before a runner is killed stay readable; an interrupted last record is
+reported as a truncated tail. Before cleanup removes the runtime, a failure
+collects the product's `logs --diagnostics` records, Repo Memory job state,
+owned process state and trace event types, each under its own time budget.
+
+Evidence holds typed allowlisted fields only: stages, error, system and exit
+codes, signals, counts, booleans, relative times, versions, checksums and
+aliases for paths inside the test root. Raw logs, command lines, configuration,
+prompts, transcripts, trace payloads, credentials, PIDs and absolute paths are
+excluded. Three results stay separate: `testOutcome` reports the native suites
+and fails the job, while `evidenceStatus` and `exportStatus` only add warnings.
+`evidenceStatus` is `UNAVAILABLE` when the test step ran without leaving a
+ledger, and `PARTIAL` when an expected record is missing, damaged or cut at the
+read limit. A skipped step owes nothing, and only an instrumented suite that ran
+owes a journal and a result, so unreached, skipped and uninstrumented suites do
+not make evidence partial.
+`exportStatus` is `UPLOADED` only when the upload step succeeded and returned an
+artifact ID; otherwise it is `EMPTY`, `UPLOAD_FAILED` or `NOT_ATTEMPTED`. The
+job summary prints a `client|os|suite|stage|code` signature and a category:
+`functional`, `cleanup` or `functional+cleanup` from the failing suite's result,
+`interrupted` for a suite that never ended and left no result, `setup` or
+`wrapper_cleanup` for a wrapper failure before the suites or after all of them
+passed, and `unclassified` otherwise. A suite whose end the wrapper never
+recorded stays `INCOMPLETE` next to the outcome its runner reported: a failure
+the runner reported keeps its category, and any other reported result is
+`EXIT_UNCONFIRMED`. Equal signatures do not prove the same root cause.
+
+Artifact names carry the run attempt, so a re-run keeps every earlier attempt's
+evidence and inputs: `native-evidence-<client>-<os>-<channel>-node-<n>-attempt<N>`,
+the candidate `memorax-code-package-attempt<N>`, `cursor-app-releases-attempt<N>`,
+and `native-client-inputs-attempt<N>`, which records the package SHA-256,
+artifact ID and digest, and each frozen npm client version with its registry
+integrity. They are retained for 30 days. A passing re-run does not mark an
+earlier failure as fixed. To keep evidence from a local run, set
+`MEMORAX_CI_EVIDENCE_DIR` to a new directory before starting a wrapper.
+
 ### Codex Functional CI
 
 The [native client functional workflow](.github/workflows/macos-codex-install.yml)
-runs on pull requests, pushes to `main`, and manual dispatch. Reuse the basic
-`Tests` and `Documentation` jobs above; this workflow adds installed-package
-and native-client evidence. It does not copy the source regression suites.
+runs on pull requests targeting `main`, pushes to `main`, and manual dispatch.
+Reuse the basic `Tests` and `Documentation` jobs above; this workflow adds
+installed-package and native-client evidence. It does not copy the source
+regression suites.
 Its Ubuntu job runs `npm-package-check` to build and validate one npm artifact.
 The package check still runs the npm regressions. A regression failure is retained
 as its exit status while independent artifact checks continue. Only after those
@@ -435,7 +584,7 @@ A Repo Memory worker case checks shared global model and provider configuration
 and remains required in the native conversation check.
 Session-specific model/provider override inheritance is pending implementation,
 so the installation wrappers report it as skipped and do not run
-`scripts/codex-model-inheritance-check.mjs`. That standalone script is retained
+`scripts/ci/codex/codex-model-inheritance-check.mjs`. That standalone script is retained
 as a future acceptance check: it sets a different foreground model or provider
 and requires the worker to use that override in its actual HTTP request and
 native record. Running it directly with an installed package root and Codex CLI
@@ -474,14 +623,14 @@ To reproduce on macOS or Linux inside an isolated development environment:
 
 ```bash
 memorax_dev make npm-package-check
-scripts/codex-install-check.sh dist/npm/tarballs 0.147.0 0.1.17
+scripts/ci/codex/codex-install-check.sh dist/npm/tarballs 0.147.0 0.1.17
 ```
 
-On Windows, download the workflow's package artifact into `dist/npm/tarballs`,
+On Windows, download the workflow's `memorax-code-package-attempt<N>` artifact into `dist/npm/tarballs`,
 then use a disposable PowerShell 7 session with Node.js and npm on PATH:
 
 ```powershell
-./scripts/codex-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodexVersion 0.147.0 -PreviousVersion 0.1.17
+./scripts/ci/codex/codex-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodexVersion 0.147.0 -PreviousVersion 0.1.17
 ```
 
 The Windows wrapper removes its temporary npm directory from the user PATH in
@@ -584,7 +733,7 @@ control, and UI reachability require separate investigation. To run it with an
 installed package, OpenCode executable, and the wrapper's test dependencies:
 
 ```bash
-node scripts/opencode-permissions-check.mjs PACKAGE_ROOT OPENCODE_EXECUTABLE --late-approval
+node scripts/ci/opencode/opencode-permissions-check.mjs PACKAGE_ROOT OPENCODE_EXECUTABLE --late-approval
 ```
 
 For startup investigation, manual dispatch with
@@ -608,19 +757,19 @@ package and run the baseline. To reuse an already validated package or select
 another exact client version:
 
 ```bash
-bash scripts/opencode-install-check.sh dist/npm/tarballs 1.18.18 0.1.18
+bash scripts/ci/opencode/opencode-install-check.sh dist/npm/tarballs 1.18.18 0.1.18
 ```
 
-On native Windows, download the package artifact and use a disposable
+On native Windows, download the `memorax-code-package-attempt<N>` artifact and use a disposable
 PowerShell 7 session with Node.js, npm, and Git for Windows available:
 
 ```powershell
-./scripts/opencode-install-check.ps1 -TarballDirectory dist/npm/tarballs -OpenCodeVersion 1.18.18 -PreviousVersion 0.1.18
+./scripts/ci/opencode/opencode-install-check.ps1 -TarballDirectory dist/npm/tarballs -OpenCodeVersion 1.18.18 -PreviousVersion 0.1.18
 ```
 
 The Windows wrapper reuses the same exact-prefix user PATH cleanup guard as
 Codex, including its interruption and concurrent-update limitations. Local
-`node scripts/opencode-e2e.mjs [TARBALL_DIR] [OPENCODE_VERSION]` delegates to
+`node scripts/ci/opencode/opencode-e2e.mjs [TARBALL_DIR] [OPENCODE_VERSION]` delegates to
 these platform wrappers; it no longer creates a separate candidate package or
 injects a prebuilt Repo Memory bundle.
 
@@ -753,17 +902,17 @@ and run the baseline. To reuse a validated artifact or select another exact
 Claude version:
 
 ```bash
-bash scripts/claude-install-check.sh dist/npm/tarballs 2.1.277 0.1.18
+bash scripts/ci/claude/claude-install-check.sh dist/npm/tarballs 2.1.277 0.1.18
 ```
 
-On native Windows, download the package artifact and use a disposable
+On native Windows, download the `memorax-code-package-attempt<N>` artifact and use a disposable
 PowerShell 7 session with Node.js 22 or later, npm, and Git for Windows:
 
 ```powershell
-./scripts/claude-install-check.ps1 -TarballDirectory dist/npm/tarballs -ClaudeVersion 2.1.277 -PreviousVersion 0.1.18
+./scripts/ci/claude/claude-install-check.ps1 -TarballDirectory dist/npm/tarballs -ClaudeVersion 2.1.277 -PreviousVersion 0.1.18
 ```
 
-Local `node scripts/claude-e2e.mjs [TARBALL_DIR] [CLAUDE_VERSION] [PREVIOUS_VERSION]`
+Local `node scripts/ci/claude/claude-e2e.mjs [TARBALL_DIR] [CLAUDE_VERSION] [PREVIOUS_VERSION]`
 delegates to the platform wrappers. It does not build or validate the package
 itself; use the Make target when the artifact has not already passed
 `npm-package-check`.
@@ -873,6 +1022,13 @@ Memory generation, per-turn model override inheritance, worker permission
 inheritance, or independent background native session identity; the product
 worker disables session persistence.
 
+CodeBuddy and WorkBuddy share the selected fixture Git on the worker's PATH,
+without displacing the isolated Node or native-client commands. If no job is
+created, failure reports include matching Hook failure codes, pending workspace
+checks, and read-only Git ref/HEAD probes marked `after_failure`. These probes
+describe the later environment, not the original scheduler's decision; they
+do not retry scheduling or replace the original failure.
+
 The shared categories align with the other client suites, but their native
 protocols and bounded assertions are not identical. WorkBuddy, Desktop/editor
 UI, ordinary-user/UAC behavior, real credential stores, live model quality, and
@@ -897,17 +1053,17 @@ On macOS or Linux, `memorax_dev make test-codebuddy-e2e` validates the package
 and runs the baseline. To reuse a validated artifact:
 
 ```bash
-bash scripts/codebuddy-install-check.sh dist/npm/tarballs 2.159.0 0.1.18
+bash scripts/ci/codebuddy-workbuddy/codebuddy-install-check.sh dist/npm/tarballs 2.159.0 0.1.18
 ```
 
 On native Windows, use a disposable PowerShell 7 session with Node.js 20 or
 later, npm, and Git for Windows:
 
 ```powershell
-./scripts/codebuddy-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodeBuddyVersion 2.159.0 -PreviousVersion 0.1.18
+./scripts/ci/codebuddy-workbuddy/codebuddy-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodeBuddyVersion 2.159.0 -PreviousVersion 0.1.18
 ```
 
-`node scripts/codebuddy-e2e.mjs [TARBALL_DIR] [CODEBUDDY_VERSION] [PREVIOUS_VERSION]`
+`node scripts/ci/codebuddy-workbuddy/codebuddy-e2e.mjs [TARBALL_DIR] [CODEBUDDY_VERSION] [PREVIOUS_VERSION]`
 delegates to the platform wrappers. It does not itself build or validate the
 package; use the Make target when the artifact has not passed
 `npm-package-check`.
@@ -923,7 +1079,8 @@ The `CI` workflow runs WorkBuddy native checks automatically for pull requests
 targeting `main` and pushes to `main`, on `ubuntu-24.04` (x64), `macos-15`
 (arm64), and `windows-2025` (x64), using Node.js 24. Each platform runs its
 fixed baseline and the latest official desktop release resolved once for that
-run. Identical full versions, URLs, and checksums share one `baseline+latest`
+run, subject to the narrow Windows fallback below. Identical full versions,
+URLs, and checksums (advisory on Linux) share one `baseline+latest`
 job; a different desktop build still gets a separate job even if its bundled
 CLI version is unchanged. One additional Ubuntu job uses the minimum supported
 Node.js 20 with the fixed Linux baseline. All four to seven jobs run the complete
@@ -933,17 +1090,22 @@ requires the candidate's complete `npm-package-check`; every platform consumes
 that same validated artifact. Matrix failures do not cancel the other platforms.
 The `WorkBuddy functional result` check requires both the package and the entire
 native matrix to succeed. Failed, cancelled, or unexpectedly skipped dependencies
-fail that check; intentionally unselected manual runs skip it as well.
-Each runner consumes the frozen release description and checks its selected
-SHA-256 before extracting or mounting the official desktop package. The
-WorkBuddy-specific resolver in `scripts/workbuddy-release-matrix.mjs` owns the
+fail that check. Manual runs that select WorkBuddy report it as
+`WorkBuddy functional result (manual run)`; other manual runs skip it.
+The aggregate also requires the resolver's coverage report. A successful matrix
+can have degraded Windows coverage: its summary names the untested official
+latest and the selected older release instead of claiming latest coverage.
+Each runner consumes the frozen release description. macOS and Windows require
+its selected SHA-256 before mounting or extracting; Linux records the actual
+SHA-256 and warns on differences while requiring package and runtime identity. The
+WorkBuddy-specific resolver in `scripts/ci/codebuddy-workbuddy/workbuddy-release-matrix.mjs` owns the
 baseline records, feed validation, and matrix; the three acquisition helpers
 also accept a validated release JSON file while retaining their standalone
 baseline defaults. Desktop and bundled CLI versions are checked separately,
 because the official platform releases are not synchronized. Baselines require
-the exact known CLI version; latest jobs read a stable CLI version from the
-verified package and compare it with the real command's `--version` before the
-native suites. The current fixed baselines are:
+the exact known CLI version; latest and fallback jobs read a stable CLI version
+from the validated package metadata and compare it with the real command's `--version`
+before the native suites. The current fixed baselines are:
 
 | Runner | Official desktop package | Bundled CLI |
 | --- | --- | --- |
@@ -951,35 +1113,61 @@ native suites. The current fixed baselines are:
 | macOS arm64 | `5.6.2.39298511` DMG | `2.147.0` |
 | Windows x64 | `5.6.2.39298511` EXE | `2.147.0` |
 
-The Linux DEB uses a maintainer-recorded SHA-256, not a vendor-published checksum.
-On 2026-10-03, two independent downloads from the fixed official HTTPS URL in
-`scripts/workbuddy-linux-bundle-check.sh` produced a 429,302,312-byte file with
-SHA-256 `2ef1bca217d29d9c2ba988c82079aa6ea0077e9f1ff882c6ab5dd7998bddf721`.
-The [official update feed](https://www.workbuddy.cn/v2/update?platform=workbuddy-linux-x64-deb)
-instead reported `03d756b259d7086c22098fa077589a032d60948d1de7313473360eefe11e240f`
-for that same URL and version. This pin detects changes from the inspected
-download; it is not an independent publisher signature or proof that the initial
-file was authentic. The resolver applies this reviewed exception only to that
-exact URL, version, and incorrect feed checksum; it never learns a pin from a
-new download. Other Linux latest releases use their official feed checksum.
-Any mismatch fails before extraction. A new mismatch requires explicit source
-review; do not bypass verification or automatically replace the expected hash.
+Linux functional CI permits same-version rebuilds: the same official DEB URL
+was observed returning packages built on 2026-09-10 and 2026-09-21 with different
+hashes but the same product and bundled CLI versions. Its baseline hash is a
+maintainer-recorded reference; other latest releases retain the official feed
+hash as a reference. A difference emits an explicit warning and diagnostic,
+not an acquisition failure. The success report records the actual download hash;
+neither downloads nor feeds replace the baseline reference. Linux deduplicates
+the same full version and URL regardless of reference hash differences.
 
-Latest discovery uses each platform's official update feed. The macOS ZIP URL
-is converted to the DMG URL in the same manner as the official download page.
+The official HTTPS source, successful complete HTTP 200 response, valid DEB
+format, package name/version/architecture, and bundled CLI identity/version
+remain required. Partial responses and declared length mismatches fail before
+extraction. A matching version is not a publisher signature or proof of
+identical contents; these checks run only on isolated CI runners without
+business credentials. macOS and Windows checksum and signature gates are unchanged.
+
+Manual `diagnose_workbuddy` runs retain each Linux download and a content-free
+response report as a one-day artifact, including checksum warnings, for offline
+comparison. Normal PR and push runs do not retain these packages. Retained
+downloads are diagnostic evidence, not authenticated release artifacts. A Linux
+hash warning permits only the isolated functional checks after all remaining
+validation passes. Response reports omit raw headers and signed URL queries.
+
+Latest discovery uses each platform's official update feed. macOS preserves the
+feed URL and its matching checksum: latest ZIP archives are extracted into the
+private runner directory, while pinned DMG images remain mounted read-only.
+Both paths require the application's Tencent signature, Apple notarization
+assessment, product version, and bundled runtime validation before execution.
 When the Windows feed has an empty checksum, the resolver freezes one commit
 of Microsoft's `winget-pkgs` repository and reads the matching WorkBuddy
 installer manifest from that immutable revision. It requires a unique x64/user
-entry with the exact official URL and product version. The YAML parser
+entry with the exact official URL and product version. Only when that exact
+manifest returns HTTP 404 does it list WorkBuddy version directories at the same
+frozen commit and select the highest stable three-part version below the
+requested official product version. That single fallback must pass the same
+manifest validation, including its exact official installer URL, full desktop
+build and SHA-256; the Windows runner still requires the valid Tencent signature.
+The manifest URL and digest select the full build; the installer's PE product
+version only confirms its three-part product version. A fallback identical to
+the baseline runs once as `baseline`, never `baseline+latest`; other selected
+older releases are labeled `fallback`. Coverage explicitly remains degraded,
+with the requested official latest recorded as untested.
+
+The YAML parser
 (`yaml@2.9.1`) is installed without lifecycle scripts in an isolated runner
 temporary directory, not added to product dependencies; package-job helper
 tests exercise the real parser. Native jobs and offline release selection need
-only Node built-ins. Missing or malformed metadata, a lagging winget manifest,
-conflicting known pins, invalid signatures, or digest mismatches fail the check
-without falling back to the baseline or reporting latest coverage as passed.
+only Node built-ins. All other feed, network, metadata, signature, or checksum
+errors fail the check, except the Linux hash differences described above.
+A missing older candidate, invalid selected manifest, conflicting non-Linux
+known pin, or failed acquisition also fails; the resolver does not
+continue trying progressively older versions.
 
 The macOS runner also requires Apple's notarization assessment and Tencent's
-Developer ID signature before using the read-only mounted application. Linux
+Developer ID signature before using the mounted or extracted application. Linux
 uses `dpkg-deb -x`, without installing the desktop package or running its
 maintainer scripts. Windows verifies the installer's Authenticode signature and
 publisher before extracting its payload with 7-Zip, without executing the
@@ -1003,7 +1191,7 @@ Memory worker suites with its tarball directory, the actual bundled
 `cli/bin/codebuddy` entrypoint, and its exact runtime version:
 
 ```bash
-memorax_dev node scripts/workbuddy-e2e.mjs dist/npm/tarballs \
+memorax_dev node scripts/ci/codebuddy-workbuddy/workbuddy-e2e.mjs dist/npm/tarballs \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" 0.1.18
 ```
 
@@ -1014,8 +1202,15 @@ for Windows. The supplied bundle is read-only; only MemoraX Code and test-only
 package is installed for WorkBuddy. The wrapper validates the bundled path
 before installation, and the suites verify the exact runtime version and
 WorkBuddy plugin metadata. CodeBuddy's existing invocation and full suite remain
-unchanged. WorkBuddy must independently pass each suite using its own client
-identity and bundled runtime; CodeBuddy results are not substitutes.
+unchanged. When the verified WorkBuddy bundle contains `dist/codebuddy-lite-wb.mjs`,
+the isolated test environment sets `CODEBUDDY_FORCE_LITE_WB_BUNDLE=1`, matching
+the official desktop host. Recent bundles omit the generic headless/TUI entrypoints;
+the public `bin/codebuddy` launcher must select the shipped lite runtime. Older
+bundles without that file keep their existing invocation. This selection is
+derived from the chosen WorkBuddy package, never inherited from the developer
+environment, and remains available to native worker children. CodeBuddy is unchanged.
+WorkBuddy must independently pass each suite using its own client identity and
+bundled runtime; CodeBuddy results are not substitutes.
 
 The shared lifecycle cases cover rejected stdin, real-terminal cancellation and
 hidden credentials, fresh/repeated setup, port-conflict recovery, stop/start,
@@ -1028,7 +1223,7 @@ account, WorkBuddy installation, a native turn and explicit Search.
 To run only native Memory/Skill checks against an already installed candidate:
 
 ```bash
-memorax_dev node scripts/workbuddy-native-check.mjs \
+memorax_dev node scripts/ci/codebuddy-workbuddy/workbuddy-native-check.mjs \
   "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION"
 ```
@@ -1105,10 +1300,10 @@ foreground exit.
 These two suites can also run independently against the installed candidate:
 
 ```bash
-memorax_dev node scripts/codebuddy-permissions-check.mjs \
+memorax_dev node scripts/ci/codebuddy-workbuddy/codebuddy-permissions-check.mjs \
   "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy
-memorax_dev node scripts/codebuddy-background-check.mjs \
+memorax_dev node scripts/ci/codebuddy-workbuddy/codebuddy-background-check.mjs \
   "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy
 ```
@@ -1117,19 +1312,22 @@ Run either strict interrupt diagnostic separately, so a failure in one does not
 prevent investigating the other:
 
 ```bash
-memorax_dev node scripts/codebuddy-permissions-check.mjs \
+memorax_dev node scripts/ci/codebuddy-workbuddy/codebuddy-permissions-check.mjs \
   "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy \
   --interrupt-case user-inflight-interrupt
-memorax_dev node scripts/codebuddy-permissions-check.mjs \
+memorax_dev node scripts/ci/codebuddy-workbuddy/codebuddy-permissions-check.mjs \
   "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy \
   --interrupt-case user-wait-interrupt
 ```
 
 All suites use fresh client and Backend state, synthetic credentials, and
-loopback model/Memory services. Reports contain bounded diagnostics, not raw
-transcripts, credentials or private paths. Cleanup must succeed before a suite
+loopback model/Memory services. Nonzero native commands report their exit status,
+output sizes, recognized error categories, and selected event counts; raw output
+and unknown text remain omitted. Setup-interruption failures also retain bounded
+receiver counts and route classifications. Reports contain bounded diagnostics,
+not raw transcripts, credentials or private paths. Cleanup must succeed before a suite
 can pass, and unverified cleanup retains its isolated state.
 
 Desktop-managed task directories, desktop startup environments, and login remain
@@ -1138,6 +1336,157 @@ these checks exercise the headless CLI on the Ubuntu runner, not automatic Linux
 desktop discovery or official Ubuntu desktop support. Implemented platform
 wrappers, acquisition tests, and a local runtime pass are not substitutes for
 successful native jobs on each target platform.
+
+### Cursor App Native Canary
+
+The native-client workflow tests the official **Cursor Desktop App**, not Cursor
+CLI, on Ubuntu 24.04 x64, macOS 15 arm64 and Windows 2025 x64. Each platform runs
+baseline **3.21.18** and the latest stable release on Node 24. Identical release
+identities share a cell; Linux also runs baseline on Node 22.13 or newer for its
+native SQLite reader. The native-check process must use the selected Node
+version, including inside the Linux container.
+
+Release resolution runs once in the package job. Every cell consumes the frozen
+inventory and the same validated candidate npm artifact, with no latest-version
+fallback. Package, lifecycle, native acceptance and cleanup failures fail the
+aggregate; a local or single-platform pass is not three-platform evidence.
+
+#### Functional Coverage
+
+Every cell first runs `scripts/ci/cursor/cursor-lifecycle-check.mjs TARBALL REPORT_DIR` in
+an isolated npm prefix and client/Backend home. It covers fresh/repeated setup,
+uninstall/reinstall, saved account/configuration retention, real upgrade from
+published MemoraX Code **0.1.18**, rejected download, replacement failure and retry.
+That baseline predates Cursor support: its Backend must be ready before upgrade,
+and the candidate must install the complete Cursor integration. Four real-PTY
+setup interruptions cover `after-config-write`, `before-backend-start`,
+`after-backend-start` and `saved-account-key-cancel`. A test-only child gate and
+the existing Backend lock control these boundaries; recovery requires no account
+input, complete installation and a saved-account Search. This does not simulate
+power loss or start the App. macOS and Windows also run the installed-package
+smoke; its synthetic Hook/database fixtures are not native App evidence.
+
+The App uses Cursor's built-in smoke driver for synthetic login and real composer
+UI input, with `--smoke-test-use-real-agent-http` pointing to the local Agent
+mock. The fixture uses the real Connect/protobuf transport, validates history KV
+bytes returned by the App, waits for native write acknowledgements, and completes
+the checkpoint. It never seeds the database, invokes Hooks directly or substitutes
+a simulated response stream. A separate read-only SQLite oracle verifies native
+composer/generation identity, checkpoint and every reachable content-addressed
+blob byte.
+
+The eleven native runs cover:
+
+- Repeated prompts and follow-up in conversation A, conversation B in a genuinely
+  different non-Git workspace, and App restart/resume back in A. Each turn retains
+  its own workspace scope.
+- Native `/memorax-code` Skill selection, exact installed attachment, Read of the
+  router and operation reference, then approved Shell Search/Add through the
+  public CLI. Scripted tool requests do not test autonomous Skill selection.
+- Shell denial through the matching UI: no file effect, normal completed turn,
+  and exact automatic Add.
+- Stop while awaiting Shell approval: correlated native cancellation and
+  interrupted Hook metadata, no file effect or Add, then a new successful turn in
+  the same session without restarting App or Backend. Cancelled content must not
+  enter completed history or the recovery Add.
+- Repo Memory in an isolated Git repository: a real foreground Hook delegates a
+  native Task to the managed child using the foreground model. The child claims
+  the supervised job and finishes without authoring a bundle, requiring
+  `failed/artifact_validation_failed`, no publication and an exited lease guard.
+  Parent/child native identities and completion notification must match. Only
+  the parent writes back; this is not successful bundle-generation coverage.
+
+The final audit requires nine exact automatic Adds plus the two explicit Skill
+requests, with complete Unicode/multiline content, authentication, client/session
+identity, local or Git scope and idempotency keys. Exact ordered transport and
+native-content counts are enforced by the executable report gate. Missing,
+duplicate, cross-session or late requests fail, including after cleanup.
+
+#### Acquisition and Isolation
+
+Linux baseline hashes are recorded reproducibility pins, not publisher-signed
+attestations. Latest Linux releases require the official download API and apt
+metadata to agree; the pinned apt key authenticates `InRelease`, package indexes
+and SHA-256. macOS verifies the mounted App's deep Apple-anchored signature,
+publisher, bundle ID, Gatekeeper result, architecture, sealed version and
+`realCommit`, then repeats validation on the private copy and detaches before
+launch. Windows verifies the official installer and installed executable's
+Authenticode, publisher, architecture, version and release commit, waiting for
+the installer process tree. Observed desktop hashes do not replace signatures.
+
+Linux runs non-root under Xvfb in a network-disabled Docker container with
+Chromium sandboxing, dropped capabilities, no-new-privileges and the pinned
+seccomp profile. macOS and Windows require fresh GitHub-hosted runners, retain
+Chromium's default sandbox and isolate client homes, App data, shell environment
+and Backend state. All use synthetic credentials, in-memory App secret storage
+and local Agent/Memory fixtures. These macOS/Windows settings verify configured
+routes, not OS-enforced isolation of all traffic or credential stores.
+
+Native Shell commands require their matching Run approval. On macOS the Skill
+commands request network access to the local fixture, and the worker finish
+command requests full command permissions; these are not loopback-only sandbox
+policies. Cleanup targets only owned live processes. Windows first requests
+native quit, then falls back only for the held live App child. Windows process
+audits share a 60-second budget, with at most 30 seconds per query and one retry
+for a query timeout. Every successful snapshot still checks all returned
+processes; only a complete snapshot without owned processes passes. Other query
+errors and exhausted budgets fail. Unconfirmed cleanup fails and retains
+isolated state for runner teardown.
+
+#### Reproduction and Reports
+
+After validating an installable candidate, use Node 24 and a local Linux-container
+Docker daemon:
+
+```bash
+node --test scripts/ci/cursor/cursor-app-*.test.mjs scripts/ci/cursor/cursor-lifecycle*.test.mjs
+memorax_candidate_tarball="$(node -p "require('./dist/npm/main-pack.json')[0].filename")"
+node scripts/ci/cursor/cursor-app-container-check.mjs \
+  "dist/npm/tarballs/$memorax_candidate_tarball" \
+  "$memorax_dev_root/cursor-app-report"
+```
+
+The two-argument command selects baseline and Node 24. For another matrix cell,
+freeze releases with `node scripts/ci/cursor/cursor-app-release.mjs resolve-linux MANIFEST`
+(requires `gpg` and `gpgv`), then append `MANIFEST latest 24` or
+`MANIFEST baseline 22` to the container command. The metadata-only `resolve`
+command does not verify Linux apt metadata and is not CI acceptance evidence.
+
+Only lifecycle and native `report.json` files are uploaded. Diagnostic helpers
+allow only fixed error/status enums, bounded counts and marker booleans; raw
+App/installer logs, command output, transcripts, database files, Hook traces,
+credentials, PIDs and private paths are excluded. Diagnostics never replace the
+original failure or relax acceptance.
+
+Skill Hook checks read initial, fresh, dynamic, user-message and completed Exec
+contexts from the current native run and its referenced, completed same-session
+history. Failure reports project only presence and session-marker match booleans
+for each source and retain the first failed Skill Hook snapshot across transport
+retries. Native Hook diagnostics count complete marker-owned execution
+blocks and their first filtering reason: JSON parsing, event, session or generation
+mismatch. A zero block count does not prove that a Hook never executed; incomplete
+or unrecognized log frames are outside this projection.
+
+Repo Memory delegation reads the same five context sources from the current
+request only; it never reuses a ticket from history. Duplicate delegations must
+agree. Failures retain the first rejected parent request for Hook and Backend
+diagnostics, plus a fixed rejection reason and bounded per-source presence and
+marker counts. Delegation prompts, invocations and capabilities stay private.
+
+Linux and macOS wait for native user Hook configuration to load for the current App
+launch before opening a new session, then require a successful marker-owned
+`sessionStart` for that session before its first submission. These bounded
+checks diagnose missing startup prerequisites; they do not make Cursor
+configuration reload and prompt submission atomic. Reports retain bounded
+relative Hook timing, including the first Repo Memory submission attempt, and
+Windows process-audit summaries on success and failure, so passing cells can
+serve as controls. Native requests and Backend registration
+remain independently observed; the fixture never supplies a missing Turn start.
+
+Real login, hosted models, OS credential-store isolation, native Continue/Retry/
+Edit, Backend restart, preauthorized tools, running-tool interruption,
+late-approval races, linked worktrees, cross-workspace Search, successful Repo
+Memory generation and native App upgrade/uninstall remain outside this matrix.
 
 ## Pull Requests
 
