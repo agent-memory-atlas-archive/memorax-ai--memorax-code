@@ -145,8 +145,11 @@ function selectTurn(text: string, input: Identity): QoderTranscriptTurnResult {
     if (descendants.length === 0) terminals.push(record);
     else pending.push(...descendants);
   }
-  if (terminals.length !== 1) return failure("turn_ambiguous");
-  const final = terminals[0];
+  const parallelResults = terminals.length > 1
+    ? parallelToolResultLeaves(records, visited, activePath, children) : new Set<string>();
+  const completions = terminals.filter((record) => !parallelResults.has(record.uuid as string));
+  if (completions.length !== 1) return failure("turn_ambiguous");
+  const final = completions[0];
   if (!activePath.has(final.uuid as string)) return failure("turn_branch_mismatch");
   if (final.type !== "assistant" || final.isMeta === true || !isRecord(final.message)
     || final.message.role !== "assistant" || final.message.stop_reason !== "end_turn") {
@@ -164,6 +167,77 @@ function selectTurn(text: string, input: Identity): QoderTranscriptTurnResult {
     ...(userTimestamp === undefined ? {} : { userTimestamp }),
     ...(assistantTimestamp === undefined ? {} : { assistantTimestamp }),
   } };
+}
+
+function parallelToolResultLeaves(
+  records: Map<string, NativeRecord>, selected: Set<string>, activePath: Set<string>,
+  children: Map<string, NativeRecord[]>,
+): Set<string> {
+  const callCounts = new Map<string, number>();
+  const resultCounts = new Map<string, number>();
+  for (const uuid of selected) {
+    const message = records.get(uuid)?.message;
+    if (!isRecord(message) || !Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      if (!isRecord(block)) continue;
+      const counts = block.type === "tool_use" ? callCounts : block.type === "tool_result" ? resultCounts : undefined;
+      const id = textValue(block.type === "tool_use" ? block.id : block.tool_use_id);
+      if (counts && id) counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+  }
+
+  // Qoder links a parallel batch's call blocks in order, but attaches each
+  // result to its own call. Only the last result continues the active path.
+  const batches = new Map<string, NativeRecord[]>();
+  for (const uuid of [...activePath].reverse()) {
+    if (!selected.has(uuid)) continue;
+    const record = records.get(uuid)!;
+    const call = nativeToolCall(record);
+    if (!call) continue;
+    const batch = batches.get(call.messageId) ?? [];
+    batch.push(record);
+    batches.set(call.messageId, batch);
+  }
+  const leaves = new Set<string>();
+  for (const batch of batches.values()) {
+    if (batch.length < 2) continue;
+    const results: NativeRecord[] = [];
+    const valid = batch.every((record, index) => {
+      const call = nativeToolCall(record)!;
+      if (callCounts.get(call.id) !== 1 || resultCounts.get(call.id) !== 1) return false;
+      const matches = (children.get(record.uuid as string) ?? []).filter((child) => (
+        selected.has(child.uuid as string) && nativeToolResult(child, call.id)
+      ));
+      if (matches.length !== 1) return false;
+      const result = matches[0];
+      results.push(result);
+      if (index === batch.length - 1) {
+        return call.stopReason === "tool_use" && activePath.has(result.uuid as string);
+      }
+      return call.stopReason == null && batch[index + 1].parentUuid === record.uuid
+        && !activePath.has(result.uuid as string) && !children.get(result.uuid as string)?.length;
+    });
+    if (valid) for (const result of results.slice(0, -1)) leaves.add(result.uuid as string);
+  }
+  return leaves;
+}
+
+function nativeToolCall(record: NativeRecord): { id: string; messageId: string; stopReason: unknown } | undefined {
+  if (record.type !== "assistant" || record.isMeta === true || !isRecord(record.message)
+    || record.message.role !== "assistant") return undefined;
+  const { content, id, stop_reason: stopReason } = record.message;
+  if (!textValue(id) || !Array.isArray(content) || content.length !== 1
+    || !isRecord(content[0]) || content[0].type !== "tool_use") return undefined;
+  const callId = textValue(content[0].id);
+  return callId ? { id: callId, messageId: id as string, stopReason } : undefined;
+}
+
+function nativeToolResult(record: NativeRecord, callId: string): boolean {
+  if (record.type !== "user" || record.isMeta === true || record.origin !== undefined
+    || isQueryBoundary(record) || !isRecord(record.message) || record.message.role !== "user") return false;
+  const content = record.message.content;
+  return Array.isArray(content) && content.length === 1 && isRecord(content[0])
+    && content[0].type === "tool_result" && content[0].tool_use_id === callId;
 }
 
 function parseRecords(text: string): Failure | {

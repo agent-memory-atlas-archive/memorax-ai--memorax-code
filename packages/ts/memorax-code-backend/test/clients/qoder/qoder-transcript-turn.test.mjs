@@ -61,6 +61,88 @@ test("reads an earlier exact turn after later human turns extend the same branch
   assert.deepEqual(await fixture.read(records, "absent-request"), { ok: false, reason: "turn_not_found" });
 });
 
+test("reads native parallel tool batches whose earlier results are leaves beside the active path", async (t) => {
+  const fixture = await createFixture(t);
+  for (const count of [2, 3]) {
+    const records = parallelToolTurn(count);
+    records[0].timestamp = "2026-01-01T00:00:00.000Z";
+    records.find((record) => record.uuid === "final").timestamp = "2026-01-01T00:01:00.000Z";
+    records.find((record) => record.uuid === "result-1").message.content[0].is_error = true;
+    records.push(...completedTurn("later-request", "final"), activeLeaf("final-later-request"));
+    assert.deepEqual(await fixture.read(records), { ok: true, turn: {
+      userPrompt: "Prompt.", assistantReply: "Final reply.", cwd,
+      userTimestamp: Date.parse("2026-01-01T00:00:00.000Z"),
+      assistantTimestamp: Date.parse("2026-01-01T00:01:00.000Z"),
+    } });
+  }
+});
+
+test("reads successive parallel batches separated by assistant progress", async (t) => {
+  const fixture = await createFixture(t);
+  const first = parallelToolTurn(2).filter((record) => record.uuid !== "final" && record.type !== "active-leaf");
+  first.push(assistant("between-batches", "result-2", null, [{ type: "text", text: "More work." }]));
+  const second = parallelToolTurn().filter((record) => record.uuid !== turnId);
+  for (const record of second) {
+    if (record.uuid) record.uuid = `second-${record.uuid}`;
+    if (record.parentUuid) record.parentUuid = record.parentUuid === turnId ? "between-batches" : `second-${record.parentUuid}`;
+    if (record.leafUuid) record.leafUuid = `second-${record.leafUuid}`;
+    if (record.message?.id) record.message.id = "second-batch";
+    for (const block of record.message?.content ?? []) {
+      if (block.type === "tool_use") block.id = `second-${block.id}`;
+      if (block.type === "tool_result") block.tool_use_id = `second-${block.tool_use_id}`;
+    }
+  }
+  assert.deepEqual(await fixture.read([...first, ...second]), {
+    ok: true, turn: { userPrompt: "Prompt.", assistantReply: "Final reply.", cwd },
+  });
+});
+
+test("parallel tool result leaves require a complete batch with unique native call and result identities", async (t) => {
+  const fixture = await createFixture(t);
+  const find = (records, uuid) => records.find((record) => record.uuid === uuid);
+  for (const [label, change] of [
+    ["wrong result ID", (r) => { find(r, "result-1").message.content[0].tool_use_id = "unknown-tool"; }],
+    ["duplicate call ID", (r) => { find(r, "call-2").message.content[0].id = "tool-1"; }],
+    ["duplicate result ID", (r) => { r.push({ ...structuredClone(find(r, "result-1")), uuid: "duplicate-result" }); }],
+    ["missing earlier result", (r) => { r.splice(r.indexOf(find(r, "result-1")), 1); }],
+    ["wrong result parent", (r) => { find(r, "result-1").parentUuid = "call-2"; }],
+    ["different assistant batch", (r) => { find(r, "call-2").message.id = "other-batch"; }],
+    ["missing assistant batch ID", (r) => { delete find(r, "call-2").message.id; }],
+    ["broken call sequence", (r) => { find(r, "call-2").parentUuid = turnId; }],
+    ["early batch stop", (r) => { find(r, "call-1").message.stop_reason = "tool_use"; }],
+    ["missing batch stop", (r) => { find(r, "call-3").message.stop_reason = null; }],
+    ["result has text", (r) => { find(r, "result-1").message.content.push({ type: "text", text: "Other branch." }); }],
+    ["wrong result role", (r) => { find(r, "result-1").message.role = "assistant"; }],
+    ["meta result", (r) => { find(r, "result-1").isMeta = true; }],
+    ["unknown result origin", (r) => { find(r, "result-1").origin = { kind: "unknown" }; }],
+    ["result is a query boundary", (r) => { find(r, "result-1").humanInput = { text: "Another human." }; }],
+    ["result continues off the active path", (r) => { r.push(node("attachment", "side-continuation", "result-1")); }],
+    ["ambiguous call block", (r) => { find(r, "call-1").message.content.push({ type: "tool_use", id: "extra-tool" }); }],
+    ["meta call", (r) => { find(r, "call-1").isMeta = true; }],
+    ["another assistant final", (r) => { r.push(assistant("other-final", turnId)); }],
+  ]) {
+    const records = parallelToolTurn();
+    change(records);
+    assert.deepEqual(await fixture.read(records), { ok: false, reason: "turn_ambiguous" }, label);
+  }
+});
+
+test("parallel results retain native scope checks and cannot complete an unfinished answer", async (t) => {
+  const fixture = await createFixture(t);
+  for (const [key, value, reason] of [
+    ["sessionId", "other-session", "transcript_session_mismatch"],
+    ["cwd", resolve("other-workspace"), "transcript_workspace_mismatch"],
+    ["isSidechain", true, "sidechain_unsupported"],
+  ]) {
+    const records = parallelToolTurn();
+    records.find((record) => record.uuid === "result-1")[key] = value;
+    assert.deepEqual(await fixture.read(records), { ok: false, reason });
+  }
+  const records = parallelToolTurn();
+  records.find((record) => record.uuid === "final").message.stop_reason = null;
+  assert.deepEqual(await fixture.read(records), { ok: false, reason: "assistant_message_missing" });
+});
+
 test("an interrupted exact turn cannot borrow a previous or later completed assistant reply", async (t) => {
   const fixture = await createFixture(t);
   const records = [
@@ -315,6 +397,23 @@ function assistant(uuid, parentUuid, stopReason = "end_turn", content = [{ type:
 
 function completedTurn(uuid, parentUuid = null, prompt = "Prompt.", reply = "Final reply.") {
   return [human(uuid, parentUuid, prompt), assistant(`final-${uuid}`, uuid, "end_turn", [{ type: "text", text: reply }])];
+}
+
+function parallelToolTurn(count = 3) {
+  const records = [human(turnId)];
+  for (let index = 1; index <= count; index += 1) {
+    const call = assistant(`call-${index}`, index === 1 ? turnId : `call-${index - 1}`,
+      index === count ? "tool_use" : null, [{ type: "tool_use", id: `tool-${index}`, name: "Read", input: {} }]);
+    call.message.id = "assistant-batch";
+    records.push(call);
+  }
+  // Result arrival order does not replace the parent and tool-use identities.
+  for (let index = count; index >= 1; index -= 1) {
+    records.push(node("user", `result-${index}`, `call-${index}`, { message: {
+      role: "user", content: [{ type: "tool_result", tool_use_id: `tool-${index}`, content: "Synthetic tool output." }],
+    } }));
+  }
+  return [...records, assistant("final", `result-${count}`), activeLeaf("final")];
 }
 
 function activeLeaf(leafUuid) {

@@ -1314,9 +1314,9 @@ test("setup seeds the default MemoraX Code config around trial memory preference
       "trace.codebuddy",
       "trace.codex",
       "trace.cursor",
-      "trace.qoder",
       "trace.dsh",
       "trace.opencode",
+      "trace.qoder",
       "trace.trae",
       "trace.workbuddy",
     ]);
