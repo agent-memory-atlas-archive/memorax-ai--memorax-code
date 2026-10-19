@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { withMemoryCliSession } from "../src/memory-cli-context.mjs";
 import { writeQoderRuntimeObservation } from "../src/runtime-observation.mjs";
 import { runQoderRepoMemoryJob } from "../src/native-repo-memory.mjs";
-import { isQoderChildHook, deferQoderNotification, consumeQoderNotification } from "../src/repo-memory-events.mjs";
+import { isQoderChildHook, deferQoderNotification, peekQoderNotification, consumeQoderNotification } from "../src/repo-memory-events.mjs";
 
 const runtimeRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const commonRoot = join(runtimeRoot, "memorax-code-adapter-common", "src");
@@ -92,11 +92,14 @@ async function run() {
   if (event === "QueryEnd") {
     const status = input.reason === "end_turn" ? "completed" : input.reason === "abort" ? "aborted" : undefined;
     if (!status) return;
-    const deferred = await consumeQoderNotification(command, { memoraxCodeHome: home });
-    if (deferred) {
-      if (status !== "completed") return;
+    const deferred = await peekQoderNotification(command, { memoraxCodeHome: home });
+    if (deferred && status === "aborted") {
+      await consumeQoderNotification(deferred, { memoraxCodeHome: home });
+      // A concurrent registration may already exist in the Backend.
+    } else if (deferred) {
       const response = await post(home, "/memory/turn-start", deferred);
       if (response?.ok !== true || response.recorded !== true) return;
+      if (!await consumeQoderNotification(deferred, { memoraxCodeHome: home })) return;
     }
     if (status) await post(home, "/memory/writeback", { ...command, status });
     return;

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
-  consumeQoderNotification, deferQoderNotification,
+  consumeQoderNotification, deferQoderNotification, peekQoderNotification,
   isQoderChildHook, isQoderTaskNotificationCandidate,
 } from "../src/repo-memory-events.mjs";
 
@@ -48,6 +48,30 @@ test("deferred prompts preserve bytes privately and consume only their exact cli
   assert.deepEqual(consumeQoderNotification(start, f.options), start);
   assert.equal(consumeQoderNotification(start, f.options), undefined);
   assert.equal(existsSync(f.path), false);
+});
+
+test("peek retains exact pending observations and a stale acknowledgment cannot delete a replacement", async (t) => {
+  const f = await fixture(t);
+  const start = { ...f.start, workspaceKind: "projectless" };
+  deferQoderNotification(start, f.options);
+  for (const mismatch of [
+    { version: 2 }, { client: "cursor" }, { sessionId: "other" }, { turnId: "other" },
+    { cwd: start.cwd + " " }, { transcriptPath: start.transcriptPath + " " },
+    { workspaceKind: undefined }, { prompt: notification + " " },
+  ]) assert.equal(peekQoderNotification({ ...start, ...mismatch }, f.options), undefined);
+  const pending = await readFile(f.path, "utf8");
+  const observed = peekQoderNotification(start, f.options);
+  assert.deepEqual(observed, start);
+  assert.deepEqual(peekQoderNotification(start, f.options), start);
+  assert.equal(await readFile(f.path, "utf8"), pending);
+
+  assert.deepEqual(consumeQoderNotification(start, f.options), start);
+  const replacement = { ...start, prompt: notification.replace("Done.", "Replacement.") };
+  deferQoderNotification(replacement, f.options);
+  assert.equal(consumeQoderNotification(observed, f.options), undefined);
+  assert.deepEqual(peekQoderNotification(replacement, f.options), replacement);
+  assert.deepEqual(consumeQoderNotification(replacement, f.options), replacement);
+  assert.equal(peekQoderNotification(replacement, f.options), undefined);
 });
 
 test("duplicate submits are idempotent and conflicting observations cannot replace pending prompts", async (t) => {
@@ -107,6 +131,7 @@ test("malformed, conflicting, oversized, or unavailable storage fails closed", a
     await writeFile(f.path, value);
     assert.throws(() => deferQoderNotification(f.start, f.options), /invalid or full/);
     assert.throws(() => consumeQoderNotification(f.start, f.options), /invalid or full/);
+    assert.throws(() => peekQoderNotification(f.start, f.options), /invalid or full/);
   }
   assert.throws(() => deferQoderNotification({ ...f.start, prompt: notification.replace("Done.", "x".repeat(1024 * 1024)) }, f.options), /invalid or full/);
   const blockedHome = join(f.root, "file-not-directory");

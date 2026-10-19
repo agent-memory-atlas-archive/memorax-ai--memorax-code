@@ -914,10 +914,10 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
         ...(report.codexAdapter || report.claudeAdapter || report.opencodeAdapter
           ? [
               green("Existing sessions with the stable plugin shell select the active runtime on their next user prompt."),
-              "Restart or refresh a client only if its plugin shell changed or MemoraX Code is not active on the next prompt.",
+              ...conditionalClientRefreshGuidance(report, "only if its plugin shell changed or MemoraX Code is not active on the next prompt"),
             ]
           : adapters.some(({ client }) => client.id !== "dsh")
-            ? ["Restart or refresh a client if MemoraX Code is not active on the next prompt."]
+            ? conditionalClientRefreshGuidance(report, "if MemoraX Code is not active on the next prompt")
             : optionalDshUnavailable
               ? []
               : [green("New DSH sessions can use MemoraX Code through the active Profile integration.")]),
@@ -952,7 +952,7 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
         green("Backend restarted."),
         green("Available client integrations were reconciled with the restarted Backend."),
         ...activationGuidance(report),
-        "Restart or refresh a client only if MemoraX Code is not active on the next prompt.",
+        ...conditionalClientRefreshGuidance(report, "only if MemoraX Code is not active on the next prompt"),
       ]
       : [
         red("Backend restart needs attention."),
@@ -1010,7 +1010,7 @@ function statusGuidance(report: MemoraxCodeStatusReport): string[] {
       ...(optionalDshUnavailable
         ? [`DSH integration is unavailable: ${report.dshAdapter?.reason ?? "not available"}.`]
         : []),
-      "Restart or refresh a client only if its plugin shell was installed, changed, or newly enabled, or MemoraX Code is not active on the next prompt.",
+      ...conditionalClientRefreshGuidance(report, "only if its plugin shell was installed, changed, or newly enabled, or MemoraX Code is not active on the next prompt"),
     ];
   }
   if (!report.backend.ok) {
@@ -1055,9 +1055,32 @@ function statusGuidance(report: MemoraxCodeStatusReport): string[] {
 }
 
 function activationGuidance(report: MemoraxCodeLifecycleReport | MemoraxCodeStatusReport): string[] {
-  return report.traeAdapter && summarizeAdapterReport(report.traeAdapter).activationRequired
-    ? ["Trae requires one manual step: open Trae Settings and enable Global Hooks, then start a new Trae session."]
-    : [];
+  return [
+    ...(report.traeAdapter && summarizeAdapterReport(report.traeAdapter).activationRequired
+      ? ["Trae requires one manual step: open Trae Settings and enable Global Hooks, then start a new Trae session."]
+      : []),
+    ...(qoderActivationRequired(report)
+      ? ["Restart Qoder and open a new task to load the managed Hooks, Skill, and background subagent."]
+      : []),
+  ];
+}
+
+function qoderActivationRequired(report: MemoraxCodeLifecycleReport | MemoraxCodeStatusReport): boolean {
+  const adapter = report.qoderAdapter;
+  return adapter !== undefined && isAdapterReady(adapter)
+    && (adapter.changed === true || summarizeAdapterReport(adapter).runtimeObserved !== true);
+}
+
+function conditionalClientRefreshGuidance(
+  report: MemoraxCodeLifecycleReport | MemoraxCodeStatusReport,
+  condition: string,
+): string[] {
+  if (qoderActivationRequired(report)) {
+    return lifecycleAdapterReports(report).some(({ client }) => client.id !== "qoder")
+      ? [`Restart or refresh another client ${condition}.`]
+      : [];
+  }
+  return [`Restart or refresh a client ${condition}.`];
 }
 
 function backendIdentityDetail(identity: MemoraxCodeStatusReport["backend"]["identity"]): string {

@@ -135,6 +135,46 @@ for (const { key, name, label } of [
   });
 }
 
+for (const action of ["start", "restart", "status"]) {
+  for (const mixed of [false, true]) {
+    test(`Qoder ${action} guidance distinguishes activation from an unchanged observed runtime${mixed ? " with other clients" : ""}`, (t) => {
+      for (const { name, changed, runtimeObserved, activationRequired } of [
+        { name: "first activation", changed: true, runtimeObserved: false, activationRequired: true },
+        { name: "changed artifacts", changed: true, runtimeObserved: true, activationRequired: true },
+        { name: "not yet observed", changed: false, runtimeObserved: false, activationRequired: true },
+        { name: "observation unavailable", changed: false, runtimeObserved: undefined, activationRequired: true },
+        { name: "unchanged observed runtime", changed: false, runtimeObserved: true, activationRequired: false },
+      ]) {
+        const report = {
+          ok: true,
+          action,
+          backend,
+          ...(mixed ? { codexAdapter: readyAdapter } : {}),
+          qoderAdapter: {
+            ...readyAdapter,
+            changed,
+            qoderSkills: { ok: true, status: "installed" },
+            qoderHooks: { ok: true, configured: true, runtimeObserved, status: runtimeObserved ? "observed" : "unverified" },
+          },
+        };
+        const before = structuredClone(report);
+        const output = captureReport(t, action === "status" ? printMemoraxCodeStatus : printLifecycleResult, report);
+        assert.match(output, /Qoder adapter: ok integration=hooks skills=installed/, name);
+        if (activationRequired) {
+          assert.match(output, /Restart Qoder and open a new task to load the managed Hooks, Skill, and background subagent[.]/, name);
+          assert.doesNotMatch(output, /Restart or refresh a client/, name);
+          if (mixed) assert.match(output, /Restart or refresh another client/, name);
+          else assert.doesNotMatch(output, /Restart or refresh/, name);
+        } else {
+          assert.doesNotMatch(output, /Restart Qoder and open a new task/, name);
+          assert.match(output, /Restart or refresh a client (?:only )?if/, name);
+        }
+        assert.deepEqual(report, before, name);
+      }
+    });
+  }
+}
+
 test("Trae activation remains explicit before a Hook has been observed", (t) => {
   const traeAdapter = {
     ...readyAdapter,

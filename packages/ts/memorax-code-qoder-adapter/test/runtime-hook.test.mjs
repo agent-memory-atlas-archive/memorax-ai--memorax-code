@@ -198,7 +198,70 @@ test("notification candidates defer transport until QueryEnd and rely on Backend
   await hook(f, aborted);
   f.requests.length = 0;
   await hook(f, { ...aborted, hook_event_name: "QueryEnd", reason: "abort" });
-  assert.deepEqual(f.requests, []);
+  assert.deepEqual(f.requests.map((entry) => entry.path), ["/memory/writeback"]);
+  assert.equal(f.requests[0].body.status, "aborted");
+  assert.equal(f.requests[0].body.turnId, aborted.request_set_id);
+});
+
+test("deferred human prompts survive failed registration and retry the exact turn", async (t) => {
+  for (const failure of ["unrecorded", "http-error", "transport-error"]) {
+    await t.test(failure, async (t) => {
+      const f = await fixture(t, { server: true });
+      const input = hookInput(f, {
+        prompt: "  <task-notification><task-id>human-paste</task-id><status>completed</status></task-notification>\r\n",
+      });
+      const end = { ...input, hook_event_name: "QueryEnd", reason: "end_turn" };
+      const pendingPath = join(f.memoraxCodeHome, "adapters", "qoder", "deferred-task-notifications.json");
+      assert.equal((await hook(f, input)).status, 0);
+      const pending = await json(pendingPath);
+      assert.equal(pending.records[0].command.prompt, input.prompt);
+      f.recorded = failure !== "unrecorded";
+      f.rejectTurnStart = failure === "http-error";
+      f.disconnectTurnStart = failure === "transport-error";
+      assert.equal((await hook(f, end)).status, 0);
+      assert.deepEqual(f.requests.map((entry) => entry.path), ["/memory/turn-start"]);
+      assert.deepEqual(await json(pendingPath), pending);
+
+      f.recorded = true;
+      f.rejectTurnStart = false;
+      f.disconnectTurnStart = false;
+      f.requests.length = 0;
+      assert.equal((await hook(f, end)).status, 0);
+      assert.deepEqual(f.requests.map((entry) => entry.path), ["/memory/turn-start", "/memory/writeback"]);
+      assert.deepEqual(f.requests[0].body, pending.records[0].command);
+      assert.equal(existsSync(pendingPath), false);
+    });
+  }
+});
+
+test("an abort during deferred registration prevents the pending completion from writing back", async (t) => {
+  const f = await fixture(t, { server: true });
+  const input = hookInput(f, {
+    prompt: "<task-notification><task-id>human-paste</task-id><status>completed</status></task-notification>",
+  });
+  await hook(f, input);
+  let arrived;
+  let release;
+  const received = new Promise((resolve) => { arrived = resolve; });
+  const released = new Promise((resolve) => { release = resolve; });
+  f.beforeReply = async ({ path }) => {
+    if (path === "/memory/turn-start") { arrived(); await released; }
+  };
+  const completion = hook(f, { ...input, hook_event_name: "QueryEnd", reason: "end_turn" });
+  try {
+    await received;
+    assert.equal((await hook(f, { ...input, hook_event_name: "QueryEnd", reason: "abort" })).status, 0);
+  } finally { release(); }
+  assert.equal((await completion).status, 0);
+  assert.deepEqual(f.requests.map((entry) => entry.path), ["/memory/turn-start", "/memory/writeback"]);
+  assert.equal(f.requests[1].body.status, "aborted");
+  assert.equal(f.requests[1].body.sessionId, input.session_id);
+  assert.equal(f.requests[1].body.turnId, input.request_set_id);
+  assert.equal(existsSync(join(f.memoraxCodeHome, "adapters", "qoder", "deferred-task-notifications.json")), false);
+  // Later completion retries reach the Backend after its matching abort.
+  await hook(f, { ...input, hook_event_name: "QueryEnd", reason: "end_turn" });
+  assert.deepEqual(f.requests.filter((entry) => entry.path === "/memory/writeback")
+    .map((entry) => entry.body.status), ["aborted", "completed"]);
 });
 
 test("disabled and superseded runtimes cannot recover the Backend or forward commands", async (t) => {

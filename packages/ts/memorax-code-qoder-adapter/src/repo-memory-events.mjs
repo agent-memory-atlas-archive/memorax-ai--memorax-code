@@ -43,9 +43,18 @@ export function deferQoderNotification(command, options = {}) {
   return true;
 }
 
+// Reading keeps the observation available until Backend registration succeeds.
+export function peekQoderNotification(command, options = {}) {
+  return observeQoderNotification(command, options, false);
+}
+
 // Consume only this Hook observation. Backend Turn metadata is still retained
 // until native writeback is accepted; this record is not completion authority.
 export function consumeQoderNotification(command, options = {}) {
+  return observeQoderNotification(command, options, true);
+}
+
+function observeQoderNotification(command, options, consume) {
   if (!commandIdentity(command)) return undefined;
   const path = recordPath(options);
   if (!existsSync(path)) return undefined;
@@ -54,8 +63,9 @@ export function consumeQoderNotification(command, options = {}) {
     if (index < 0) return undefined;
     const start = records[index].command;
     if (start.cwd !== command.cwd || start.transcriptPath !== command.transcriptPath
-      || start.workspaceKind !== command.workspaceKind) return undefined;
-    records.splice(index, 1);
+      || start.workspaceKind !== command.workspaceKind
+      || (Object.hasOwn(command, "prompt") && start.prompt !== command.prompt)) return undefined;
+    if (consume) records.splice(index, 1);
     return start;
   });
 }

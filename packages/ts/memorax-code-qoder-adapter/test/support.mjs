@@ -24,6 +24,10 @@ export async function fixture(t, { install = true, server = false } = {}) {
       const body = text ? JSON.parse(text) : undefined;
       value.requests.push({ path: request.url, body });
       await value.beforeReply?.({ path: request.url, body });
+      if (value.disconnectTurnStart && request.url === "/memory/turn-start") {
+        request.socket.destroy();
+        return;
+      }
       let reply = { ok: true };
       if (request.url === "/health") reply = { ok: value.healthy, service: "memorax-code-backend" };
       if (request.url === "/memory/turn-start") reply = { ok: true, recorded: value.recorded, userNotice: value.notice, repoMemoryWorktree: value.repoMemoryWorktree };
