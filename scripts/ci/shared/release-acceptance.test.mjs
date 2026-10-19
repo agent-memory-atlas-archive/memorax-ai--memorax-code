@@ -126,6 +126,8 @@ const WORKBUDDY_ROWS = [
   { os: "ubuntu-24.04", node: "24", release: { channel: "baseline+latest", desktopVersion: "5.5.6.38337834" } },
   { os: "windows-2025", node: "24", release: { channel: "fallback", desktopVersion: "5.6.2.39298511" } },
 ];
+// The package job records upload-artifact's bare digest; the REST API reports the same digest with a sha256: prefix.
+const PACKAGE_DIGEST = "d".repeat(64);
 
 // One downloaded candidate package plus the run outputs, artifact record and WorkBuddy reports for a passing run.
 function acceptedRun(t, { version = "0.1.20", eligibility = { status: "RELEASABLE", reasons: [], unconfirmed: [] } } = {}) {
@@ -152,12 +154,12 @@ function acceptedRun(t, { version = "0.1.20", eligibility = { status: "RELEASABL
     range: { from: "v0.1.19", commits: 2, pullRequests: [302, 301] }, npm: { status: "NOT_PUBLISHED", latest: "0.1.19" },
     docsBase: { sha: "b".repeat(40), source: "previous-release" }, eligibility, notes: [] });
   Object.assign(needs.package.outputs, { "package-artifact-name": "memorax-code-package-attempt1", "package-artifact-id": "123",
-    "package-artifact-digest": "sha256:abc", "package-sha256": sha256, "codex-matrix": matrix("codex", "0.147.0"),
+    "package-artifact-digest": PACKAGE_DIGEST, "package-sha256": sha256, "codex-matrix": matrix("codex", "0.147.0"),
     "opencode-matrix": matrix("opencode", "1.18.18"), "claude-matrix": matrix("claude", "2.1.277"),
     "codebuddy-matrix": matrix("codebuddy", "2.159.0"), "cursor-matrix": matrix("cursor", "3.21.18") });
   needs["workbuddy-releases"].outputs = { matrix: JSON.stringify({ include: WORKBUDDY_ROWS }),
     coverage: "Coverage degraded: Windows latest not tested; selected 5.6.2.39298511." };
-  const artifact = { id: 123, name: "memorax-code-package-attempt1", digest: "sha256:abc", expired: false, workflow_run: { id: 999 } };
+  const artifact = { id: 123, name: "memorax-code-package-attempt1", digest: `sha256:${PACKAGE_DIGEST}`, expired: false, workflow_run: { id: 999 } };
   return { root, packageDir, reports, needs, artifact, sha256,
     decide: (overrides = {}) => decideRelease({ needs, packageDir, workbuddyReportsDir: reports, artifact, env: ENV, ...overrides }) };
 }
@@ -169,7 +171,7 @@ test("a releasable candidate passes only with every job and the exact package ve
   assert.deepEqual(record.acceptance.issues, []);
   assert.deepEqual(record.package, { file: "memorax-memorax-code-0.1.20.tgz", sha256: run.sha256,
     packageJson: { name: PACKAGE_NAME, version: "0.1.20" },
-    artifact: { name: "memorax-code-package-attempt1", id: "123", digest: "sha256:abc" } });
+    artifact: { name: "memorax-code-package-attempt1", id: "123", digest: PACKAGE_DIGEST } });
   assert.deepEqual(record.clients.codex, [{ os: "ubuntu-24.04", node: "24", channel: "baseline", version: "0.147.0" }]);
   assert.deepEqual(record.clients.workbuddy.cells.map((cell) => [cell.channel, cell.desktopVersion, cell.runtimeVersion, cell.source]),
     [["baseline+latest", "5.5.6.38337834", "2.10.0", "download.codebuddy.cn"], ["fallback", "5.6.2.39298511", "2.11.0", "download.codebuddy.cn"]]);
@@ -216,7 +218,11 @@ test("the candidate package must be the recorded artifact, file, checksum and ve
     ["no file", (run) => rmSync(run.packageDir, { recursive: true }), "INCOMPLETE", "PACKAGE_FILE_MISSING"],
     ["two files", (run) => writeFileSync(join(run.packageDir, "memorax-memorax-code-0.1.21.tgz"), ""), "FAIL", "PACKAGE_FILE_AMBIGUOUS"],
     ["no artifact record", (run) => ({ artifact: null }), "INCOMPLETE", "ARTIFACT_METADATA_MISSING"],
-    ["digest", (run) => ({ artifact: { ...run.artifact, digest: "sha256:other" } }), "FAIL", "ARTIFACT_IDENTITY_MISMATCH"],
+    ["digest", (run) => ({ artifact: { ...run.artifact, digest: `sha256:${"e".repeat(64)}` } }), "FAIL", "ARTIFACT_IDENTITY_MISMATCH"],
+    ["malformed digests", (run) => {
+      run.needs.package.outputs["package-artifact-digest"] = "sha256:abc";
+      return { artifact: { ...run.artifact, digest: "sha256:abc" } };
+    }, "FAIL", "ARTIFACT_IDENTITY_MISMATCH"],
     ["other run", (run) => ({ artifact: { ...run.artifact, workflow_run: { id: 1 } } }), "FAIL", "ARTIFACT_IDENTITY_MISMATCH"],
     ["expired", (run) => ({ artifact: { ...run.artifact, expired: true } }), "FAIL", "ARTIFACT_IDENTITY_MISMATCH"],
     ["no package outputs", (run) => { delete run.needs.package.outputs["package-artifact-id"]; }, "INCOMPLETE", "PACKAGE_RECORD_MISSING"],

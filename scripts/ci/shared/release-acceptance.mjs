@@ -131,6 +131,8 @@ function walk(directory) {
 }
 
 const sha256File = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
+// upload-artifact reports a bare hex digest while the REST API prefixes the same digest with "sha256:".
+const digestHex = (value) => /^(?:sha256:)?([a-f0-9]{64})$/.exec(String(value ?? ""))?.[1] ?? null;
 const parseJson = (value) => {
   try { return JSON.parse(value); } catch { return null; }
 };
@@ -149,7 +151,8 @@ function verifyPackage({ outputs, candidate, packageDir, artifact, runId }, fail
     return record;
   }
   if (!artifact) incomplete("ARTIFACT_METADATA_MISSING");
-  else if (String(artifact.id) !== record.artifact.id || artifact.name !== record.artifact.name || artifact.digest !== record.artifact.digest
+  else if (String(artifact.id) !== record.artifact.id || artifact.name !== record.artifact.name
+    || !digestHex(record.artifact.digest) || digestHex(artifact.digest) !== digestHex(record.artifact.digest)
     || artifact.expired !== false || String(artifact.workflow_run?.id) !== String(runId)) fail("ARTIFACT_IDENTITY_MISMATCH");
   const files = walk(packageDir).filter((path) => /(?:^|[\\/])memorax-memorax-code-[^\\/]+\.tgz$/.test(path));
   if (files.length !== 1) {
