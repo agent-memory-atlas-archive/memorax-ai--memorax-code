@@ -58,9 +58,10 @@ would override a test's own `WORKBUDDY_HOME` fixture.
 
 For direct lifecycle experiments, isolate every affected client's home and
 inject synthetic command fixtures. The primary overrides are `CODEX_HOME`,
-`CLAUDE_CONFIG_DIR`, `DSH_HOME`, `OPENCODE_CONFIG_DIR`, `CODEBUDDY_HOME`, and
-`TRAE_CN_HOME`, and `CURSOR_HOME`; account for the aliases `CLAUDE_HOME`, `WORKBUDDY_HOME`, and
-`TRAE_HOME` as well. `PATH` still contains installed programs, so a temporary
+`CLAUDE_CONFIG_DIR`, `DSH_HOME`, `OPENCODE_CONFIG_DIR`, `CODEBUDDY_HOME`,
+`TRAE_CN_HOME`, `CURSOR_HOME`, and `QODER_CONFIG_DIR`; account for the aliases
+`CLAUDE_HOME`, `WORKBUDDY_HOME`, `TRAE_HOME`, `QODER_CLI_HOME`, and
+`QODER_CONFIG_DIR_NAME` as well. `PATH` still contains installed programs, so a temporary
 home alone does not prevent real-client execution. Inspect the affected path
 and command resolvers when adding a client or changing discovery.
 
@@ -337,8 +338,9 @@ Shared Skill and native launcher tests cover the real canonical Skill validator.
 | CodeBuddy/WorkBuddy | `npm run build --prefix packages/ts/memorax-code-backend`, then `npm test --prefix packages/ts/memorax-code-codebuddy-adapter` |
 | Trae | `npm test --prefix packages/ts/memorax-code-trae-adapter` |
 | Cursor | `npm test --prefix packages/ts/memorax-code-cursor-adapter` |
+| Qoder | `npm test --prefix packages/ts/memorax-code-qoder-adapter` |
 | Repo Memory | Backend + Shared Skill + `make test-adapter-common`: collector, validator, and updater cases use compiled Backend helpers through the canonical Skill launcher; common tests own scheduling and policy behavior. Add affected adapter profiles when their scheduling or launchers change |
-| Adapter-common/shared Hook | `make test-adapter-common`, affected Backend tests, and all seven adapter suites; add Shared Skill for changes used by Skill readers or launchers and Install/artifacts when staged runtime or package layout changes |
+| Adapter-common/shared Hook | `make test-adapter-common`, affected Backend tests, and all eight adapter suites; add Shared Skill for changes used by Skill readers or launchers and Install/artifacts when staged runtime or package layout changes |
 | Lifecycle report interpretation | Backend; add Install/artifacts for CLI or lifecycle behavior changes |
 | Trace/local-only boundary | Affected package tests plus `make test-npm-package` |
 | Documentation | `make docs-check` |
@@ -415,7 +417,7 @@ or native Windows behavior.
 Native-client runners, helpers, and their adjacent tests are grouped under
 `scripts/ci/`:
 
-- `codex/`, `claude/`, `dsh/`, `opencode/`, and `cursor/` own each client's checks.
+- `codex/`, `claude/`, `dsh/`, `opencode/`, `cursor/`, and `qoder/` own each client's checks.
 - `codebuddy-workbuddy/` owns both clients' entrypoints and shared checks.
 - `shared/` owns cross-client cleanup tests, Windows user PATH utilities, the
   first-failure evidence recorder and the workflow scenario contract.

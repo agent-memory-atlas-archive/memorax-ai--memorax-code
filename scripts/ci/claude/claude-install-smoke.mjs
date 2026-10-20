@@ -14,7 +14,7 @@ import { selectLifecyclePlugin, assertLifecycleMarketplace, snapshotClaudeSettin
   assertLifecycleHooks, assertLifecycleIntegrationAbsent, classifyLifecycleRequest } from "./claude-lifecycle-assertions.mjs";
 
 const pluginName = "memorax-code-claude-adapter";
-const otherClients = ["codex", "opencode", "dsh", "codebuddy", "workbuddy", "trae", "cursor"];
+const otherClients = ["codex", "opencode", "dsh", "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
 const fixtureKey = `sk_${"E".repeat(43)}`;
 const fixtureUser = "lifecycle-saved-account";
 const searchFixture = "LIFECYCLE_SAVED_ACCOUNT_SEARCH_RESULT";
@@ -848,6 +848,7 @@ function isolatedEnv(userHome, claudeCommand) {
     CODEBUDDY_HOME: join(userHome, ".codebuddy"), CODEBUDDY_CONFIG_DIR: join(userHome, ".codebuddy"),
     WORKBUDDY_HOME: join(userHome, ".workbuddy"), WORKBUDDY_CONFIG_DIR: join(userHome, ".workbuddy"),
     TRAE_CN_HOME: join(userHome, ".trae-cn"), TRAE_HOME: join(userHome, ".trae-cn"), CURSOR_HOME: join(userHome, ".cursor"),
+    QODER_CONFIG_DIR: join(userHome, ".qoder"),
     MEMORAX_CODE_CLAUDE_TRACE_ENABLED: "false",
   };
   if (process.platform === "win32") {

@@ -17,7 +17,7 @@ import { projectError, projectPathAlias, projectProductDiagnostics, signal as kn
 const execFileAsync = promisify(execFile);
 const pluginName = "memorax-code-codex-adapter";
 const pluginId = `${pluginName}@memorax-code`;
-const otherClients = ["claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor"];
+const otherClients = ["claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
 const fixtureKey = `sk_${"E".repeat(43)}`;
 const fixtureUser = "lifecycle-saved-account";
 const searchFixture = "LIFECYCLE_SAVED_ACCOUNT_SEARCH_RESULT";
@@ -822,6 +822,7 @@ function isolatedEnv(userHome, codexCommand) {
     CODEBUDDY_HOME: join(userHome, ".codebuddy"), CODEBUDDY_CONFIG_DIR: join(userHome, ".codebuddy"),
     WORKBUDDY_HOME: join(userHome, ".workbuddy"), WORKBUDDY_CONFIG_DIR: join(userHome, ".workbuddy"),
     TRAE_CN_HOME: join(userHome, ".trae-cn"), TRAE_HOME: join(userHome, ".trae-cn"), CURSOR_HOME: join(userHome, ".cursor"),
+    QODER_CONFIG_DIR: join(userHome, ".qoder"),
     MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
   };
   if (process.platform === "win32") Object.assign(isolated, {

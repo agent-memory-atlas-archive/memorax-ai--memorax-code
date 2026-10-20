@@ -12,7 +12,7 @@ import {
 import type { TraceContext } from "../trace/context.js";
 
 export type MemoryWritebackBufferDecision = {
-  client: "codex" | "claude-code" | "opencode" | "dsh" | "codebuddy" | "workbuddy" | "trae" | "cursor";
+  client: "codex" | "claude-code" | "opencode" | "dsh" | "codebuddy" | "workbuddy" | "trae" | "cursor" | "qoder";
   sessionKey: string;
   idempotencyKey: string;
   messages: WritebackMessage[];

@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-const clients = ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor"];
+const clients = ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
 export const fixtureKey = `sk_${"E".repeat(43)}`;
 export const fixtureUser = "native-fixture-user";
 export const fixtureModel = "memorax-codebuddy-fixture";
@@ -480,7 +480,7 @@ function isolatedEnv({ root, home, stateHome, codebuddyHome, codebuddyCommand, c
     // CodeBuddy's model loader prefers WORKBUDDY_CONFIG_DIR even in CodeBuddy.
     // Set that alias only for WorkBuddy; its default home is always isolated.
     WORKBUDDY_HOME: join(home, ".workbuddy"),
-    TRAE_HOME: join(home, ".trae-cn"), TRAE_CN_HOME: join(home, ".trae-cn"), CURSOR_HOME: join(home, ".cursor"),
+    TRAE_HOME: join(home, ".trae-cn"), TRAE_CN_HOME: join(home, ".trae-cn"), CURSOR_HOME: join(home, ".cursor"), QODER_CONFIG_DIR: join(home, ".qoder"),
   };
   if (client === "workbuddy") {
     env.WORKBUDDY_CONFIG_DIR = codebuddyHome;
