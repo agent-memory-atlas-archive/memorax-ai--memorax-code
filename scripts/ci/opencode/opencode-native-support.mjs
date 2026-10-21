@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-const otherClients = ["codex", "claude", "dsh", "codebuddy", "workbuddy", "trae", "cursor"];
+const otherClients = ["codex", "claude", "dsh", "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
 const signalCleanups = new Set();
 const signalHandlers = new Map(["SIGINT", "SIGTERM"].map((signal) => [signal, () => handleSignal(signal)]));
 const safeErrorNames = new Set(["Error", "TypeError", "RangeError", "SyntaxError", "AbortError", "TimeoutError", "AggregateError"]);
@@ -561,7 +561,7 @@ function isolatedEnv({ root, home, stateHome, openCodeConfigDir, openCodeCommand
     CLAUDE_HOME: join(home, ".claude"), CODEBUDDY_HOME: join(home, ".codebuddy"),
     CODEBUDDY_CONFIG_DIR: join(home, ".codebuddy"), WORKBUDDY_HOME: join(home, ".workbuddy"),
     WORKBUDDY_CONFIG_DIR: join(home, ".workbuddy"), TRAE_HOME: join(home, ".trae-cn"), TRAE_CN_HOME: join(home, ".trae-cn"),
-    CURSOR_HOME: join(home, ".cursor"),
+    CURSOR_HOME: join(home, ".cursor"), QODER_CONFIG_DIR: join(home, ".qoder"),
   };
   if (process.platform === "win32") Object.assign(env, { SystemRoot: windowsRoot, WINDIR: windowsRoot,
     ComSpec: join(windowsRoot, "System32", "cmd.exe"), PATHEXT: ".COM;.EXE;.BAT;.CMD", USERNAME: "native-fixture" });
