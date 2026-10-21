@@ -878,6 +878,13 @@ jobs:
           path: ${{ runner.temp }}/workbuddy-report/report.json
           if-no-files-found: warn
           retention-days: 30
+      # TEMPORARY PROBE for the PR-2 rerun experiment; removed by a revert commit before the pull request.
+      - name: TEMPORARY PROBE fail attempt 1 after this cell's evidence
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'release-acceptance' && github.run_attempt == '1' && runner.os == 'Linux' && matrix.node == '20'
+        shell: bash
+        run: |
+          printf '%s\n' '::error title=TEMPORARY_PROBE::WorkBuddy Linux Node 20 fails attempt 1 by design to exercise Re-run failed jobs.'
+          exit 1
 
   opencode-initialization-diagnostic:
     name: OpenCode Windows initialization diagnostic (not functional acceptance)

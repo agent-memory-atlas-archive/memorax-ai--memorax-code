@@ -58,6 +58,14 @@ jobs:
             MEMORAX_CODE_HOME="$test_root/state" \
             npm_config_cache="$test_root/npm-cache" TMPDIR="$test_root/tmp" \
             make test
+      # TEMPORARY PROBE for the PR-2 rerun experiment; removed by a revert commit before the pull request.
+      - name: TEMPORARY PROBE fail attempt 1 after the called checks
+        if: inputs.purpose == 'release-acceptance' && github.run_attempt == '1'
+        shell: bash
+        run: |
+          git rev-parse HEAD
+          printf '%s\n' '::error title=TEMPORARY_PROBE::Called Tests fails attempt 1 by design to exercise Re-run failed jobs.'
+          exit 1
 
   documentation:
     name: Documentation
