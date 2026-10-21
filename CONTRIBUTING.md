@@ -352,13 +352,14 @@ and only reports `NOT_RELEASABLE`.
 through the API that the artifact belongs to the run, has not expired, and has
 the recorded digest, recomputes the tarball's SHA-256, and reads the package name
 and version from the tarball. It reads the job listing of every attempt of the
-run, including the current one. A failed query, a missing, empty or unreadable
+run, including the current one, which it reads while it still runs. A failed query, a missing, empty or unreadable
 listing, missing pages, or jobs of another run or attempt leave acceptance
 `INCOMPLETE` with the attempt and its status, never an attempt without failures;
 the job results are still recorded. Each WorkBuddy cell's report must come from
-the attempt in which the cell last ran, identified through that listing: a cell
-that did not run again keeps its earlier report, and one that ran again without
-a new report is `INCOMPLETE` rather than using the older one. The report's schema,
+the attempt in which the cell last ran, identified through those listings by the
+cell job's start time and runner: a cell that did not run again keeps its earlier
+report, and one that ran again without a new report, or whose execution a listing
+does not identify, is `INCOMPLETE` rather than using an older one. The report's schema,
 run, attempt, platform, Node.js version, channel, versions, download host and
 reference hash must match the run and the frozen release; only Linux may record a
 hash warning. It records acceptance (`PASS`, `FAIL`, or

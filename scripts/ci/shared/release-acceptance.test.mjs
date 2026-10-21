@@ -406,6 +406,47 @@ test("WorkBuddy reports come from the attempt in which each cell last ran and mu
   assert.ok(run.decide({ attempts: [listing(1, [{ name: "package", ...ranAt(0, 1) }])] }).acceptance.issues.includes("WORKBUDDY_ATTEMPT_UNKNOWN"));
 });
 
+test("a WorkBuddy cell's attempt is unknown unless each listing holding it identifies one execution", { skip }, (t) => {
+  const [linux, windows] = WORKBUDDY_ROWS;
+  const env = { ...ENV, GITHUB_RUN_ATTEMPT: "2" };
+  // Skipped jobs have no runner and the running release result has no conclusion; neither identifies a WorkBuddy cell.
+  const others = (attempt) => [{ name: "package", ...ranAt(0, 1) }, { name: jobName(windows), ...ranAt(5, 11) },
+    { name: "provider", conclusion: "skipped", started_at: "2026-10-19T03:00:01Z", runner_id: null },
+    ...(attempt === 2 ? [{ name: "Release acceptance result", status: "in_progress", conclusion: null, ...ranAt(50, 77) }] : [])];
+  const attempts = (first, second) => [listing(1, [...others(1), ...first]), listing(2, [...others(2), ...second])];
+  const cell = (fields) => [{ name: jobName(linux), ...fields }];
+  for (const [label, first, second] of [
+    ["fields missing in both listings", cell({}), cell({})],
+    ["fields null in both listings", cell({ started_at: null, runner_id: null }), cell({ started_at: null, runner_id: null })],
+    ["earlier listing without a runner", cell({ started_at: "2026-10-19T03:05:00Z" }), cell(ranAt(40, 50))],
+    ["latest listing without a runner", cell(ranAt(5, 10)), cell({ started_at: "2026-10-19T03:05:00Z", runner_id: null })],
+    ["start time is not a timestamp", cell({ started_at: "yesterday", runner_id: 10 }), cell({ started_at: "yesterday", runner_id: 10 })],
+    ["runner is not a positive integer", cell({ ...ranAt(5, 10), runner_id: "10" }), cell({ ...ranAt(5, 10), runner_id: "10" })],
+    ["runner zero", cell({ ...ranAt(5, 10), runner_id: 0 }), cell({ ...ranAt(5, 10), runner_id: 0 })],
+    ["name held twice", cell(ranAt(5, 10)), [...cell(ranAt(5, 10)), ...cell(ranAt(40, 50))]],
+    ["runner shared with another job", [...cell(ranAt(5, 10)), { name: "Tests", ...ranAt(6, 10) }],
+      [...cell(ranAt(5, 10)), { name: "Tests", ...ranAt(6, 10) }]],
+  ]) {
+    const run = acceptedRun(t);
+    const record = run.decide({ attempts: attempts(first, second), env });
+    assert.equal(record.verdict, "INCOMPLETE", label);
+    assert.ok(record.acceptance.issues.includes("WORKBUDDY_ATTEMPT_UNKNOWN"), `${label}: ${record.acceptance.issues}`);
+    // The cell's attempt-1 report exists but is never used.
+    assert.deepEqual([record.clients.workbuddy.cells[0].attempt, record.clients.workbuddy.cells[0].report, record.clients.workbuddy.cells[0].runtimeVersion],
+      [null, null, null], label);
+    assert.equal(record.clients.workbuddy.cells[1].attempt, 1, label);
+  }
+  // Identified executions: carried over keeps attempt 1; absent from attempt 1 means the cell first ran in attempt 2.
+  const carried = acceptedRun(t).decide({ attempts: attempts(cell(ranAt(5, 10)), cell(ranAt(5, 10))), env });
+  assert.equal(carried.verdict, "PASS", carried.acceptance.issues.join());
+  assert.equal(carried.clients.workbuddy.cells[0].attempt, 1);
+  const late = acceptedRun(t);
+  writeReport(late.reports, linux, 2);
+  const lateRecord = late.decide({ attempts: attempts([], cell(ranAt(40, 50))), env });
+  assert.equal(lateRecord.verdict, "PASS", lateRecord.acceptance.issues.join());
+  assert.equal(lateRecord.clients.workbuddy.cells[0].report, "workbuddy-report-ubuntu-24.04-baseline+latest-node-24-attempt2");
+});
+
 test("WorkBuddy reports keep both hashes and the status; only Linux may warn", { skip }, (t) => {
   const [linux, windows] = WORKBUDDY_ROWS;
   const run = acceptedRun(t);

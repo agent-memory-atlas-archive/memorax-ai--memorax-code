@@ -202,17 +202,34 @@ function verifyPackage({ outputs, candidate, packageDir, artifact, runId }, fail
 // The job name the workflow gives each WorkBuddy cell; the attempts API identifies cells only by name.
 const workbuddyJobName = (row) => `WorkBuddy native (${row.os}, Node ${row.node}, ${row.release?.channel}, ${row.release?.desktopVersion})`;
 
-// The attempt in which a cell last ran. A job carried into a later attempt keeps its start time and runner, while a job
-// that ran again gets new ones. Without every attempt's complete listing the attempt is unknown.
+const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+
+// A job's execution in one listing: its start time and runner. A job carried into a later attempt keeps both, and every
+// job that runs gets its own runner. Undefined when the listing does not hold the job; null when it holds the job but
+// does not identify one execution of it.
+function executionIn(jobs, name) {
+  const matches = jobs.filter((job) => job.name === name);
+  if (!matches.length) return undefined;
+  const [job] = matches;
+  if (matches.length !== 1 || !Number.isSafeInteger(job.runner_id) || job.runner_id < 1 || !TIMESTAMP.test(job.started_at ?? "")
+    || jobs.filter((other) => other.runner_id === job.runner_id).length !== 1) return null;
+  return `${job.started_at} ${job.runner_id}`;
+}
+
+// The attempt in which a cell last ran: the earliest attempt from which the latest listing's execution was carried.
+// Without every attempt's complete listing, or when a listing holds the cell without identifying its execution, the
+// attempt is unknown.
 function lastRunAttempt(name, attempts) {
   if (!attempts.length || attempts.some((entry) => entry.status !== "COMPLETE")) return null;
-  const records = attempts.map((entry) => entry.jobs?.find((job) => job.name === name) ?? null);
-  for (let index = records.length - 1; index >= 0; index -= 1) {
-    const [job, before] = [records[index], records[index - 1]];
-    if (!job) return null;
-    if (!before || job.started_at !== before.started_at || job.runner_id !== before.runner_id) return attempts[index].attempt;
+  const executions = attempts.map((entry) => executionIn(entry.jobs ?? [], name));
+  let index = executions.length - 1;
+  if (!executions[index]) return null;
+  while (index > 0 && executions[index - 1] !== undefined) {
+    if (executions[index - 1] === null) return null;
+    if (executions[index - 1] !== executions[index]) break;
+    index -= 1;
   }
-  return null;
+  return attempts[index].attempt;
 }
 
 // Each cell's report must come from the attempt in which the cell last ran: a cell that did not run again keeps its
