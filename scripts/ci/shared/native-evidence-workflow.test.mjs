@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 const read = async (path) => (await readFile(new URL(path, import.meta.url), "utf8")).replaceAll("\r\n", "\n");
@@ -126,6 +129,38 @@ test("the package job publishes the candidate package and frozen client versions
   assert.match(step("package", (item) => item.includes("name: cursor-app-releases-attempt")), /^          retention-days: 30$/m);
   const tests = step("package", (item) => item.startsWith("name: Verify test assertions reject malformed content and unexpected failures\n"));
   assert.match(tests, /scripts\/ci\/shared\/ci-evidence\.test\.mjs scripts\/ci\/shared\/native-evidence-workflow\.test\.mjs scripts\/ci\/shared\/native-evidence-wrappers\.test\.mjs/);
+});
+
+test("only a main push record marks the native client checks not applicable", { skip: process.platform === "win32" }, async (t) => {
+  const manifest = step("package", (item) => item.startsWith("name: Record the candidate package and frozen client versions\n"));
+  const script = manifest.split("\n        run: |\n")[1].split("\n").map((line) => line.slice(10)).join("\n");
+  const root = await mkdtemp(join(tmpdir(), "native-client-inputs-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  // A stand-in for node keeps the arguments the step passes to the evidence helper.
+  const capture = "node() { printf '%s\\0' \"$@\" > \"$RUNNER_TEMP/arguments\"; }";
+  const digest = `sha256:${"8".repeat(64)}`;
+  const record = async (event, matrix) => {
+    const run = spawnSync("/bin/bash", ["-e", "-o", "pipefail", "-c", `${capture}\n${script}`], { cwd: root, encoding: "utf8", timeout: 5_000,
+      env: { PATH: "/usr/bin:/bin", RUNNER_TEMP: root, GITHUB_EVENT_NAME: event, GITHUB_RUN_ATTEMPT: "2", PACKAGE_ARTIFACT_ID: "12028286155",
+        PACKAGE_ARTIFACT_DIGEST: digest, CODEX_MATRIX: matrix, OPENCODE_MATRIX: matrix, CLAUDE_MATRIX: matrix, CODEBUDDY_MATRIX: matrix } });
+    assert.equal(run.status, 0, run.stderr);
+    return (await readFile(join(root, "arguments"), "utf8")).split("\0").slice(0, -1);
+  };
+  const common = (matrix) => ["scripts/ci/shared/ci-evidence.mjs", "manifest", join(root, "native-client-inputs.json"),
+    "--package-dir", "dist/npm/tarballs", "--package-artifact-name", "memorax-code-package-attempt2",
+    "--package-artifact-id", "12028286155", "--package-artifact-digest", digest,
+    ...["codex", "opencode", "claude", "codebuddy"].flatMap((client) => ["--matrix", `${client}=${matrix}`])];
+  // A main push resolves no client versions; its record keeps the package identity and marks the client checks.
+  assert.deepEqual(await record("push", ""), [...common(""), "--client-checks", "NOT_APPLICABLE"]);
+  // Manual diagnostics that build the package keep their established record.
+  assert.deepEqual(await record("workflow_dispatch", ""), common(""));
+  // Pull requests and release acceptance record the frozen client versions and Cursor releases without the marker.
+  await writeFile(join(root, "cursor-app-releases.json"), "{}\n");
+  const matrix = JSON.stringify({ include: [{ os: "ubuntu-24.04", node: "24", codex: "0.147.0", channel: "baseline" }] });
+  for (const event of ["pull_request", "workflow_dispatch"]) {
+    assert.deepEqual(await record(event, matrix), [...common(matrix), "--cursor-releases", join(root, "cursor-app-releases.json"),
+      "--cursor-releases-artifact-name", "cursor-app-releases-attempt2"], event);
+  }
 });
 
 test("wrappers capture the evidence location before isolation and pass it only to test runners", async () => {

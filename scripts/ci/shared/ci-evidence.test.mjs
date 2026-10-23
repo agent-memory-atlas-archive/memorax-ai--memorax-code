@@ -606,6 +606,51 @@ test("inputs and the manifest record package and client provenance with checksum
   assert.equal(manifest.clients.codex.versions[0].shasum, "a".repeat(40));
   assert.deepEqual(manifest.clients.opencode.versions.map(({ channels, lookup }) => [channels, lookup]), [[["baseline", "latest"], "FAILED"]]);
   assert.equal(manifest.clients.claude, undefined);
+  assert.equal(manifest.clientChecks, undefined);
+});
+
+test("a main push manifest records the package, marks native client checks not applicable and looks up no client", async (t) => {
+  const root = await workspace(t);
+  const packages = join(root, "tarballs");
+  await mkdir(packages);
+  await writeFile(join(packages, "memorax-memorax-code-0.1.21.tgz"), "candidate bytes");
+  const calls = join(root, "npm-calls");
+  const fakeNpm = join(root, "fake-npm.mjs");
+  await writeFile(fakeNpm, `
+    import { appendFileSync } from "node:fs";
+    const args = process.argv.slice(2);
+    appendFileSync(${JSON.stringify(calls)}, args.join(" ") + "\\n");
+    if (args[0] === "config") console.log("https://registry.npmjs.org/");
+    else process.exit(1);
+  `);
+  const env = { GITHUB_REPOSITORY: "memorax-ai/memorax-code", GITHUB_SHA: "46afc0cac2a9a9e46b3e398a6320907c39a8ca9f",
+    GITHUB_REF: "refs/heads/main", GITHUB_EVENT_NAME: "push", GITHUB_RUN_ID: "38858541095", GITHUB_RUN_ATTEMPT: "1", GITHUB_JOB: "package" };
+  // The package job's arguments on a main push, whose client version lookups did not run.
+  const options = { "package-dir": packages, "package-artifact-name": "memorax-code-package-attempt1", "package-artifact-id": "12028286155",
+    "package-artifact-digest": `sha256:${"8".repeat(64)}`, matrix: ["codex=", "opencode=", "claude=", "codebuddy="] };
+  const manifest = await recordManifest(join(root, "push.json"), { ...options, "client-checks": "NOT_APPLICABLE" },
+    { env, npm: [process.execPath, fakeNpm] });
+  assert.deepEqual(manifest.package, { file: "memorax-memorax-code-0.1.21.tgz",
+    sha256: "732d058fadd90c70f22429227ab5d9c74919217099efe737aa46835ce3a60856",
+    artifact: { name: "memorax-code-package-attempt1", id: "12028286155", digest: `sha256:${"8".repeat(64)}` } });
+  assert.equal(manifest.source.event, "push");
+  assert.equal(manifest.clientChecks, "NOT_APPLICABLE");
+  assert.deepEqual(manifest.clients, {});
+  assert.equal(manifest.cursorReleases, undefined);
+  assert.deepEqual(JSON.parse(await readFile(join(root, "push.json"), "utf8")), manifest);
+  assert.deepEqual((await readFile(calls, "utf8")).trim().split("\n"), ["config get registry"]);
+  // Only the exact marker is recorded; without it a manifest claims nothing about client checks.
+  for (const [index, value] of [undefined, "", "not-applicable", "PASS"].entries()) {
+    const other = await recordManifest(join(root, `other-${index}.json`), { ...options, "client-checks": value },
+      { env, npm: [process.execPath, fakeNpm] });
+    assert.equal(other.clientChecks, undefined, String(value));
+  }
+  // The command line the package job uses records the same marker.
+  const output = join(root, "cli.json");
+  const run = spawnSync(process.execPath, [helper, "manifest", output, "--package-dir", packages, "--matrix", "codex=",
+    "--client-checks", "NOT_APPLICABLE"], { encoding: "utf8", env: { PATH: join(root, "no-npm") } });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(JSON.parse(await readFile(output, "utf8")).clientChecks, "NOT_APPLICABLE");
 });
 
 for (const [client, suite] of [["codex", "codex-install-interruption-check"], ["claude", "claude-install-smoke"]]) {

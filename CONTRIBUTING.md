@@ -297,13 +297,23 @@ checks, which together form the merge gate for `main`:
 
 Each result job also runs after a dependency fails; failed, cancelled, or
 skipped dependencies fail it. Push, manual, and release acceptance runs reuse
-only the `Tests` and `Documentation` names, whose jobs always execute. Result
-names add `(main push)` or the manual mode, such as `(release-acceptance)`, and
-provider-only runs report `Codex provider-only result`. These results stay
-visible without being mistaken for pull request acceptance. In each workflow, a
+only the `Tests` and `Documentation` names, whose jobs always execute. Manual
+result names add the mode, such as `(release-acceptance)`, and provider-only
+runs report `Codex provider-only result`. These results stay visible without
+being mistaken for pull request acceptance. In each workflow, a
 newer run cancels an older one only for the same pull request, for pushes to
 `main`, or for the same manual mode on the same ref; release acceptance runs
 are never cancelled.
+
+A push to `main` runs a health check, not this acceptance: pull requests run it
+before merging, and release acceptance runs it for a candidate. Besides `Tests`
+and `Documentation`, the native client functional workflow then runs only its
+package job: the CI script contract tests, `make npm-package-check` with its
+isolated installation smoke tests, and the package checksum, upload, and input
+record, which marks native client checks `NOT_APPLICABLE`. It resolves no client
+or desktop release versions and skips every client matrix, WorkBuddy, and result
+job. These skipped placeholders never carry a merge check name and claim no
+functional acceptance.
 
 Protect `main` in GitHub branch protection by requiring these eight checks from
 GitHub Actions, requiring branches to be up to date before merging, requiring a
@@ -311,10 +321,11 @@ pull request before merging, and including administrators. When `main` moves,
 update an open pull request to rerun both workflows on the new merge result.
 This setting is managed separately from the workflows. The `Tests` check runs
 `scripts/ci/shared/workflow-scenarios.test.mjs`. It evaluates the expressions
-these workflows use for triggers, job conditions, check names, and concurrency
-groups in each event and manual selection, and runs each result script against
-failed, cancelled, and skipped dependencies. It is a source contract, not a
-complete model of GitHub Actions execution.
+these workflows use for triggers, job conditions, the package job's version
+lookups, check names, and concurrency groups in each event and manual
+selection, and runs each result script against failed, cancelled, and skipped
+dependencies. It is a source contract, not a complete model of GitHub Actions
+execution.
 
 ### Release Acceptance
 
@@ -563,14 +574,17 @@ evidence and inputs: `native-evidence-<client>-<os>-<channel>-node-<n>-attempt<N
 the candidate `memorax-code-package-attempt<N>`, `cursor-app-releases-attempt<N>`,
 and `native-client-inputs-attempt<N>`, which records the package SHA-256,
 artifact ID and digest, and each frozen npm client version with its registry
-integrity. They are retained for 30 days. A passing re-run does not mark an
+integrity. A push to `main` uploads only the package and this record, which
+then lists no client versions and marks `clientChecks` as `NOT_APPLICABLE`.
+They are retained for 30 days. A passing re-run does not mark an
 earlier failure as fixed. To keep evidence from a local run, set
 `MEMORAX_CI_EVIDENCE_DIR` to a new directory before starting a wrapper.
 
 ### Codex Functional CI
 
 The [native client functional workflow](.github/workflows/macos-codex-install.yml)
-runs on pull requests targeting `main`, pushes to `main`, and manual dispatch.
+runs on pull requests targeting `main`, pushes to `main`, and manual dispatch;
+a push to `main` runs only its package job (see [Merge Checks](#merge-checks)).
 Reuse the basic `Tests` and `Documentation` jobs above; this workflow adds
 installed-package and native-client evidence. It does not copy the source
 regression suites.
@@ -1162,7 +1176,7 @@ bundled runtime have distinct versions. Do not substitute the independently
 installed CodeBuddy CLI for that runtime.
 
 The native client functional workflow runs WorkBuddy native checks automatically
-for pull requests targeting `main`, pushes to `main`, and release acceptance, on `ubuntu-24.04` (x64), `macos-15`
+for pull requests targeting `main` and release acceptance, on `ubuntu-24.04` (x64), `macos-15`
 (arm64), and `windows-2025` (x64), using Node.js 24. Each platform runs its
 fixed baseline and the latest official desktop release resolved once for that
 run, subject to the narrow Windows fallback below. Identical full versions,
@@ -1222,7 +1236,7 @@ business credentials. macOS and Windows checksum and signature gates are unchang
 
 `workbuddy-download-diagnostic` runs retain each Linux download and a content-free
 response report as a one-day artifact, including checksum warnings, for offline
-comparison. Normal PR and push runs do not retain these packages. Retained
+comparison. Other runs do not retain these packages. Retained
 downloads are diagnostic evidence, not authenticated release artifacts. A Linux
 hash warning permits only the isolated functional checks after all remaining
 validation passes. Response reports omit raw headers and signed URL queries.

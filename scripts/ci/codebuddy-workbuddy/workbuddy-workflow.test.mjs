@@ -48,12 +48,12 @@ test("WorkBuddy CI automatically listens to main PRs and pushes without path fil
 });
 
 for (const id of ["workbuddy-releases", "workbuddy-native", "workbuddy-result"]) {
-  test(`${id} runs for pull requests, main pushes, release acceptance and the WorkBuddy diagnostic only`, () => {
+  test(`${id} runs for pull requests, release acceptance and the WorkBuddy diagnostic only`, () => {
     const condition = job(id).match(/^    if: (.+)$/m)?.[1];
     assert.ok(condition);
     if (id === "workbuddy-result") assert.match(condition, /^always\(\) && /);
     for (const [event, mode] of [["pull_request"], ["push"], ...MODES.map((item) => ["workflow_dispatch", item])]) {
-      const expected = event !== "workflow_dispatch" || ["release-acceptance", "workbuddy-download-diagnostic"].includes(mode);
+      const expected = event === "pull_request" || ["release-acceptance", "workbuddy-download-diagnostic"].includes(mode);
       assert.equal(selected(condition, { event, mode }), expected, `${event}, mode=${mode}`);
     }
   });

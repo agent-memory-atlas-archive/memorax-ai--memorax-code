@@ -58,7 +58,7 @@ jobs:
           package-manager-cache: false
       # Client versions are resolved only for runs whose client matrices consume them.
       - name: Resolve the latest Codex version once for this run
-        if: github.event_name != 'workflow_dispatch' || inputs.mode == 'release-acceptance'
+        if: github.event_name == 'pull_request' || inputs.mode == 'release-acceptance'
         id: codex-versions
         shell: bash
         run: |
@@ -81,7 +81,7 @@ jobs:
             `${include.length} required installation, native-flow and permission jobs; no version fallback.\n`);
           NODE
       - name: Resolve the latest OpenCode version once for this run
-        if: github.event_name != 'workflow_dispatch' || inputs.mode == 'release-acceptance'
+        if: github.event_name == 'pull_request' || inputs.mode == 'release-acceptance'
         id: opencode-versions
         shell: bash
         run: |
@@ -104,7 +104,7 @@ jobs:
             `${include.length} required installation, native-flow and permission jobs; no version fallback.\n`);
           NODE
       - name: Resolve the latest Claude Code version once for this run
-        if: github.event_name != 'workflow_dispatch' || inputs.mode == 'release-acceptance'
+        if: github.event_name == 'pull_request' || inputs.mode == 'release-acceptance'
         id: claude-versions
         shell: bash
         run: |
@@ -127,7 +127,7 @@ jobs:
             `${include.length} required lifecycle, interruption, native memory, Skill, permission and Repo Memory configuration jobs; no version fallback. Client-specific coverage remains bounded.\n`);
           NODE
       - name: Resolve the latest CodeBuddy Code version once for this run
-        if: github.event_name != 'workflow_dispatch' || inputs.mode == 'release-acceptance'
+        if: github.event_name == 'pull_request' || inputs.mode == 'release-acceptance'
         id: codebuddy-versions
         shell: bash
         run: |
@@ -150,7 +150,7 @@ jobs:
             `${include.length} required lifecycle, interruption, native memory, Skill, permission and Repo Memory configuration jobs; no version fallback. WorkBuddy is outside this scope; client-specific coverage remains bounded.\n`);
           NODE
       - name: Resolve and freeze Cursor App releases once for this run
-        if: github.event_name != 'workflow_dispatch' || inputs.mode == 'release-acceptance'
+        if: github.event_name == 'pull_request' || inputs.mode == 'release-acceptance'
         id: cursor-versions
         shell: bash
         run: |
@@ -186,7 +186,7 @@ jobs:
             `${include.length} required Linux, macOS and Windows App jobs, including Linux baseline on Node 22. No version fallback.\n`);
           NODE
       - uses: actions/upload-artifact@v4
-        if: github.event_name != 'workflow_dispatch' || inputs.mode == 'release-acceptance'
+        if: github.event_name == 'pull_request' || inputs.mode == 'release-acceptance'
         with:
           name: cursor-app-releases-attempt${{ github.run_attempt }}
           path: ${{ runner.temp }}/cursor-app-releases.json
@@ -254,11 +254,16 @@ jobs:
           if [[ -f "$RUNNER_TEMP/cursor-app-releases.json" ]]; then
             cursor_releases=(--cursor-releases "$RUNNER_TEMP/cursor-app-releases.json" --cursor-releases-artifact-name "cursor-app-releases-attempt$GITHUB_RUN_ATTEMPT")
           fi
+          # A main push runs only this package health check, so its record marks the native client checks not applicable.
+          client_checks=()
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            client_checks=(--client-checks NOT_APPLICABLE)
+          fi
           node scripts/ci/shared/ci-evidence.mjs manifest "$RUNNER_TEMP/native-client-inputs.json" \
             --package-dir dist/npm/tarballs --package-artifact-name "memorax-code-package-attempt$GITHUB_RUN_ATTEMPT" \
             --package-artifact-id "$PACKAGE_ARTIFACT_ID" --package-artifact-digest "$PACKAGE_ARTIFACT_DIGEST" \
             --matrix "codex=$CODEX_MATRIX" --matrix "opencode=$OPENCODE_MATRIX" \
-            --matrix "claude=$CLAUDE_MATRIX" --matrix "codebuddy=$CODEBUDDY_MATRIX" "${cursor_releases[@]}"
+            --matrix "claude=$CLAUDE_MATRIX" --matrix "codebuddy=$CODEBUDDY_MATRIX" "${cursor_releases[@]}" "${client_checks[@]}"
       - uses: actions/upload-artifact@v4
         if: always() && steps.package-check.outputs.artifact-ready == 'true'
         continue-on-error: true
@@ -271,7 +276,7 @@ jobs:
   install:
     name: Codex ${{ matrix.channel }} ${{ matrix.codex }} (${{ matrix.os }}, Node ${{ matrix.node }})
     needs: package
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (github.event_name != 'workflow_dispatch' || inputs.mode == 'release-acceptance')
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.codex-matrix) }}
@@ -378,7 +383,7 @@ jobs:
   opencode:
     name: OpenCode ${{ matrix.channel }} ${{ matrix.opencode }} (${{ matrix.os }}, Node ${{ matrix.node }})
     needs: package
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (github.event_name != 'workflow_dispatch' || inputs.mode == 'release-acceptance')
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.opencode-matrix) }}
@@ -487,7 +492,7 @@ jobs:
   claude:
     name: Claude smoke ${{ matrix.channel }} ${{ matrix.claude }} (${{ matrix.os }}, Node ${{ matrix.node }})
     needs: package
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (github.event_name != 'workflow_dispatch' || inputs.mode == 'release-acceptance')
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.claude-matrix) }}
@@ -584,7 +589,7 @@ jobs:
   codebuddy:
     name: CodeBuddy functional ${{ matrix.channel }} ${{ matrix.codebuddy }} (${{ matrix.os }}, Node ${{ matrix.node }})
     needs: package
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (github.event_name != 'workflow_dispatch' || inputs.mode == 'release-acceptance')
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.codebuddy-matrix) }}
@@ -624,7 +629,7 @@ jobs:
   cursor-app:
     name: Cursor App ${{ matrix.channel }} ${{ matrix.cursor }} (${{ matrix.os }}, Node ${{ matrix.node }})
     needs: package
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (github.event_name != 'workflow_dispatch' || inputs.mode == 'release-acceptance')
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.cursor-matrix) }}
@@ -690,7 +695,7 @@ jobs:
 
   workbuddy-releases:
     name: WorkBuddy releases
-    if: github.event_name != 'workflow_dispatch' || inputs.mode == 'release-acceptance' || inputs.mode == 'workbuddy-download-diagnostic'
+    if: github.event_name == 'pull_request' || inputs.mode == 'release-acceptance' || inputs.mode == 'workbuddy-download-diagnostic'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     outputs:
@@ -725,7 +730,7 @@ jobs:
   workbuddy-native:
     name: WorkBuddy native (${{ matrix.os }}, Node ${{ matrix.node }}, ${{ matrix.release.channel }}, ${{ matrix.release.desktopVersion }})
     needs: [package, workbuddy-releases]
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && needs.workbuddy-releases.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.mode == 'release-acceptance' || inputs.mode == 'workbuddy-download-diagnostic')
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && needs.workbuddy-releases.result == 'success' && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance' || inputs.mode == 'workbuddy-download-diagnostic')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.workbuddy-releases.outputs.matrix) }}
@@ -1001,9 +1006,10 @@ jobs:
           Remove-Item -LiteralPath $root -Recurse -Force
 
   opencode-result:
-    # Only pull request runs report the formal result names; push runs add (main push) and manual runs their mode.
+    # Only pull request runs report the formal result names; manual runs add their mode. Main pushes skip these jobs;
+    # the (main push) suffix keeps even their skipped placeholders from carrying a formal name.
     name: ${{ github.event_name == 'pull_request' && 'OpenCode functional result' || format('OpenCode functional result ({0})', github.event_name == 'push' && 'main push' || inputs.mode) }}
-    if: always() && (github.event_name != 'workflow_dispatch' || inputs.mode == 'release-acceptance')
+    if: always() && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance')
     needs: [package, opencode]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
@@ -1022,7 +1028,7 @@ jobs:
 
   claude-result:
     name: ${{ github.event_name == 'pull_request' && 'Claude native smoke result' || format('Claude native smoke result ({0})', github.event_name == 'push' && 'main push' || inputs.mode) }}
-    if: always() && (github.event_name != 'workflow_dispatch' || inputs.mode == 'release-acceptance')
+    if: always() && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance')
     needs: [package, claude]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
@@ -1041,7 +1047,7 @@ jobs:
 
   codebuddy-result:
     name: ${{ github.event_name == 'pull_request' && 'CodeBuddy functional result' || format('CodeBuddy functional result ({0})', github.event_name == 'push' && 'main push' || inputs.mode) }}
-    if: always() && (github.event_name != 'workflow_dispatch' || inputs.mode == 'release-acceptance')
+    if: always() && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance')
     needs: [package, codebuddy]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
@@ -1060,7 +1066,7 @@ jobs:
 
   cursor-app-result:
     name: ${{ github.event_name == 'pull_request' && 'Cursor App canary result' || format('Cursor App canary result ({0})', github.event_name == 'push' && 'main push' || inputs.mode) }}
-    if: always() && (github.event_name != 'workflow_dispatch' || inputs.mode == 'release-acceptance')
+    if: always() && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance')
     needs: [package, cursor-app]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
@@ -1079,9 +1085,10 @@ jobs:
           fi
 
   workbuddy-result:
-    # Only pull request runs report the formal result name; push runs add (main push) and manual runs their mode.
+    # Only pull request runs report the formal result name; manual runs add their mode. Main pushes skip this job;
+    # the (main push) suffix keeps even its skipped placeholder from carrying the formal name.
     name: ${{ github.event_name == 'pull_request' && 'WorkBuddy functional result' || format('WorkBuddy functional result ({0})', github.event_name == 'push' && 'main push' || inputs.mode) }}
-    if: always() && (github.event_name != 'workflow_dispatch' || inputs.mode == 'release-acceptance' || inputs.mode == 'workbuddy-download-diagnostic')
+    if: always() && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance' || inputs.mode == 'workbuddy-download-diagnostic')
     needs: [package, workbuddy-releases, workbuddy-native]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
@@ -1106,7 +1113,7 @@ jobs:
 
   functional-result:
     name: ${{ github.event_name == 'pull_request' && 'Codex functional result' || github.event_name == 'workflow_dispatch' && inputs.mode == 'provider-only' && 'Codex provider-only result' || format('Codex functional result ({0})', github.event_name == 'push' && 'main push' || inputs.mode) }}
-    if: always() && (github.event_name != 'workflow_dispatch' || inputs.mode == 'release-acceptance' || inputs.mode == 'provider-only')
+    if: always() && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance' || inputs.mode == 'provider-only')
     needs: [package, install, provider]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
