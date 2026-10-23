@@ -1514,9 +1514,9 @@ Placement rules:
   `scripts/ci/<harness>`. CodeBuddy and WorkBuddy share
   `scripts/ci/codebuddy-workbuddy` because they reuse the same runtime checks.
   Cross-harness process cleanup tests, Windows PATH utilities, the
-  first-failure evidence recorder and the workflow scenario contract live in
-  `scripts/ci/shared`; repository build, packaging, and release scripts stay
-  in `scripts`. Cursor App image assets remain in `scripts/fixtures/cursor-app`.
+  first-failure evidence recorder, the workflow scenario contract and the
+  release acceptance record live in `scripts/ci/shared`; repository build,
+  packaging, and release scripts stay in `scripts`. Cursor App image assets remain in `scripts/fixtures/cursor-app`.
 - Cross-capability server composition belongs in `test/app`; wire-level Hook
   protocol behavior belongs in `test/transport/http`.
 - Area-specific fixtures belong in `test/<area>/support`; only helpers truly

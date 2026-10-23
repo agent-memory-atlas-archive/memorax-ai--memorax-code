@@ -35,22 +35,22 @@ function selected(id, options = {}) {
 }
 
 function evaluateCondition(condition, options = {}) {
-  const { event = "pull_request", provider = false, diagnostic = false, cancelled = false } = options;
+  const { event = "pull_request", mode, cancelled = false } = options;
   const ready = Object.hasOwn(options, "ready") ? options.ready : "true";
   return Boolean(runInNewContext(condition.replaceAll("needs.package.outputs.artifact-ready", 'needs.package.outputs["artifact-ready"]'), {
-    github: { event_name: event }, inputs: { check_deepseek: provider, diagnose_opencode_initialization: diagnostic },
+    github: { event_name: event }, inputs: event === "workflow_dispatch" ? { mode } : {},
     needs: { package: { outputs: { "artifact-ready": ready } } }, always: () => true, cancelled: () => cancelled,
   }, { timeout: 100 }));
 }
 
+// Pull requests, main pushes and the manual release acceptance run Cursor; the other manual modes are diagnostics.
+const SELECTIONS = [["pull_request"], ["push"], ...["release-acceptance", "provider-only", "opencode-initialization-diagnostic",
+  "workbuddy-download-diagnostic"].map((mode) => ["workflow_dispatch", mode])];
+const acceptance = (event, mode) => event !== "workflow_dispatch" || mode === "release-acceptance";
+
 test("Cursor App jobs retain normal triggers and exclude dedicated manual diagnostics", () => {
-  for (const event of ["pull_request", "push", "workflow_dispatch"]) {
-    for (const provider of [false, true]) {
-      for (const diagnostic of [false, true]) {
-        const expected = event !== "workflow_dispatch" || (!provider && !diagnostic);
-        for (const id of ["cursor-app", "cursor-app-result"]) assert.equal(selected(id, { event, provider, diagnostic }), expected);
-      }
-    }
+  for (const [event, mode] of SELECTIONS) {
+    for (const id of ["cursor-app", "cursor-app-result"]) assert.equal(selected(id, { event, mode }), acceptance(event, mode), `${id}: ${event} ${mode}`);
   }
   for (const ready of [undefined, "", "false"]) assert.equal(selected("cursor-app", { ready }), false);
   assert.equal(selected("cursor-app", { cancelled: true }), false);
@@ -103,12 +103,7 @@ test("Cursor release acquisition runs once outside the matrix and excludes dedic
   const step = job("package").split("      - name: Resolve and freeze Cursor App releases once for this run\n")[1];
   const condition = step.match(/^        if: (.+)$/m)?.[1];
   assert.ok(condition);
-  for (const event of ["pull_request", "push", "workflow_dispatch"]) {
-    for (const provider of [false, true]) for (const diagnostic of [false, true]) {
-      assert.equal(evaluateCondition(condition, { event, provider, diagnostic }),
-        event !== "workflow_dispatch" || (!provider && !diagnostic));
-    }
-  }
+  for (const [event, mode] of SELECTIONS) assert.equal(evaluateCondition(condition, { event, mode }), acceptance(event, mode), `${event} ${mode}`);
   assert.equal((source.match(/node scripts\/ci\/cursor\/cursor-app-release\.mjs resolve-linux/g) ?? []).length, 1);
   assert.match(step, /name: cursor-app-releases-attempt\$\{\{ github\.run_attempt \}\}\n          path: \$\{\{ runner\.temp \}\}\/cursor-app-releases\.json\n          if-no-files-found: error/);
 });
