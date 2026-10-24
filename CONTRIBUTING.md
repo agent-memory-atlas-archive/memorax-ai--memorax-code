@@ -537,6 +537,13 @@ written before a runner is killed stay readable; an interrupted last record is
 reported as a truncated tail. Before cleanup removes the runtime, a failure
 collects the product's `logs --diagnostics` records, Repo Memory job state,
 owned process state and trace event types, each under its own time budget.
+A failed Codex installation run also records, from disk rather than through the
+installed CLI, the entry point status, installed package version, package
+transition state, Backend PID record, the liveness of that record's process and
+the update registry's request counts, each with its own status and time budget.
+A skipped `logs --diagnostics` collection records why, and cleanup records
+whether it issued `stop` or why it did not and, under a time budget, whether a
+remaining PID record's process is still alive.
 Codex setup retries preserve the observed terminal exit and fixed product
 stages before terminal disposal. Claude replacement checks record separate
 artifact-pack, expected update rejection, recovery and readiness phases.

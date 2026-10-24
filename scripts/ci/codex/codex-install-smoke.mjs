@@ -13,7 +13,7 @@ import { verifyBackendReplacementState, assertCredentialNotEchoed, assertSetupIn
   snapshotProtectedConfiguration, assertProtectedConfiguration } from "./codex-lifecycle-assertions.mjs";
 import { createEvidenceRecorder } from "../shared/ci-evidence.mjs";
 import { projectTerminalDisposal } from "./codex-setup-pty-evidence.mjs";
-import { projectError, projectPathAlias, projectProductDiagnostics, signal as knownSignal } from "../shared/ci-evidence-projections.mjs";
+import { projectError, projectPathAlias, projectProductDiagnostics, semver, signal as knownSignal, systemCode } from "../shared/ci-evidence-projections.mjs";
 
 const execFileAsync = promisify(execFile);
 const pluginName = "memorax-code-codex-adapter";
@@ -46,6 +46,9 @@ const endpointErrors = [];
 const backendPids = new Set();
 let npmCommand, npmPrefix, candidateTarball, ptyPackage, ptyScript;
 let expectedPackageVersion, expectedPluginVersion, expectedEvents, sourceRoot, parse;
+// Upgrade registry request counts, and stop commands issued, for failure evidence.
+let registryRequests;
+let stopInvocations = 0;
 let originalProvider;
 const preservedMemory = new Map();
 // Evidence stays outside `root`, so it survives cleanup failures and killed runners.
@@ -284,7 +287,7 @@ try {
   const artifact = await readFile(candidateTarball);
   let servedArtifact = artifact;
   let servedManifest = manifest;
-  const registryRequests = { manifest: 0, artifact: 0, rejectedArtifact: 0 };
+  registryRequests = { manifest: 0, artifact: 0, rejectedArtifact: 0 };
   let rejectDownload = true;
   let registryUrl;
   registry = createServer((request, response) => {
@@ -454,15 +457,18 @@ try {
   // Typed name and code only; the message and command output stay private.
   const errorDetails = projectError(error);
   if (Object.keys(errorDetails).length) report.errorDetails = errorDetails;
+  // Failure-time state, read before cleanup and without the installed CLI.
+  try { report.failureState = await snapshotFailureState(); }
+  catch { report.failureState = { status: "failed" }; }
   await collectProductDiagnostics();
 } finally {
   const functionalOutcome = report.status;
   try {
     if (setupStarted) {
-      cleanupStage = "entrypoint_check";
-      if (await exists(entrypoint)) await stopAndVerify();
-      else await assertStopped();
+      await stopForCleanup();
       report.checks.push("Backend stopped, process exited and port released");
+    } else {
+      report.cleanupStop = { invoked: false, skipReason: "backend_not_started" };
     }
     if (root) {
       cleanupStage = "directory_removal";
@@ -484,6 +490,8 @@ try {
       report.cleanupFailure.trackedPidIndex = cleanupTrackedPidIndex;
       report.cleanupFailure.trackedPidCount = backendPids.size;
     }
+    // A remaining PID record ends the shutdown checks; record whether its process is still alive.
+    if (cleanupStage === "pid_record_removal") await observeCleanupBackendPid();
     if (["ENOENT", "EACCES", "EPERM", "EBUSY", "ENOTEMPTY", "ESRCH", "EINVAL", "ETIMEDOUT",
       "EADDRINUSE", "EADDRNOTAVAIL", "EPIPE", "ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EIO", "EROFS"].includes(error.code)) {
       report.cleanupFailure.systemCode = error.code;
@@ -506,15 +514,114 @@ console.log(JSON.stringify(report, null, 2));
 if (report.status !== "PASS") process.exitCode = 1;
 
 // Read the product's validated diagnostic records before cleanup removes them;
-// only typed fields reach the evidence journal.
+// only typed fields reach the evidence journal. A skipped collection records why.
 async function collectProductDiagnostics() {
-  if (!env || !entrypoint || !(await exists(entrypoint).catch(() => false))) return;
-  await evidence.collect("productDiagnostics", async () => {
+  if (!env || !entrypoint) {
+    report.productDiagnostics = { status: "skipped", reason: "environment_not_ready" };
+    return;
+  }
+  const entry = await inspectEntrypoint();
+  if (entry.status !== "present") {
+    report.productDiagnostics = { status: "skipped", reason: entry.status === "missing" ? "entrypoint_missing" : "entrypoint_stat_error" };
+    return;
+  }
+  const collected = await evidence.collect("productDiagnostics", async () => {
     const result = await execFileAsync(process.execPath, [entrypoint, "logs", "--diagnostics", "--limit", "20", "--json"], {
       cwd: workspace, env, timeout: 15_000, maxBuffer: 1024 * 1024, encoding: "utf8", windowsHide: true,
     }).catch((error) => { if (/^\s*\{/.test(error.stdout ?? "")) return error; throw error; });
     return projectProductDiagnostics(JSON.parse(result.stdout));
   }, { budgetMs: 20_000 });
+  report.productDiagnostics = { status: collected.status === "OK" ? "collected" : collected.status === "TIMEOUT" ? "timed_out" : "failed" };
+}
+
+// Failure-time state read directly from disk: an interrupted update can remove or replace the
+// installed CLI. Each item is a separately budgeted collection, so one item that fails or never
+// returns cannot hold back or discard the others.
+async function snapshotFailureState(budgetMs = 5_000) {
+  const item = async (name, inspect) => boundedObservation(await evidence.collect(`failureState.${name}`, inspect, { budgetMs }));
+  const [entrypointState, installedPackage, packageTransition, backendPid] = await Promise.all([
+    item("entrypoint", inspectEntrypoint), item("installedPackage", inspectInstalledPackage),
+    item("packageTransition", inspectPackageTransition), item("backendPid", inspectBackendPid),
+  ]);
+  return {
+    entrypoint: entrypointState, installedPackage, packageTransition, backendPid,
+    registryRequests: registryRequests ? { manifest: registryRequests.manifest, artifact: registryRequests.artifact,
+      rejectedArtifact: registryRequests.rejectedArtifact } : { status: "not_started" },
+  };
+}
+
+// After a remaining PID record ends the shutdown checks, observe its process within a budget;
+// the observation never replaces the cleanup failure it describes.
+async function observeCleanupBackendPid(budgetMs = 5_000) {
+  let observed;
+  try { observed = await evidence.collect("cleanupBackendPid", inspectBackendPid, { budgetMs }); }
+  catch { observed = { status: "FAILED" }; }
+  report.cleanupFailure.backendPid = boundedObservation(observed);
+}
+
+// A bounded collection's value, or why it has none.
+function boundedObservation(observed) {
+  if (observed.status === "OK") return observed.value;
+  return observed.status === "TIMEOUT" ? { status: "timed_out" } : withSystemCode({ status: "observation_failed" }, observed.error);
+}
+
+async function inspectEntrypoint() {
+  if (!entrypoint) return { status: "not_initialized" };
+  try {
+    await stat(entrypoint);
+    return { status: "present" };
+  } catch (error) {
+    return error?.code === "ENOENT" ? { status: "missing" } : withSystemCode({ status: "stat_error" }, error);
+  }
+}
+
+async function inspectInstalledPackage() {
+  if (!entrypoint) return { file: "not_initialized" };
+  const { value, ...record } = await readStateRecord(join(dirname(dirname(entrypoint)), "package.json"));
+  if (record.file !== "present") return record;
+  const version = semver(value?.version);
+  return { ...record, version, relation: !version ? "invalid_version" : version === expectedPackageVersion ? "candidate"
+    : version === semver(process.argv[6]) ? "previous" : "other" };
+}
+
+// Classifies the transition record without importing code from the package being replaced.
+async function inspectPackageTransition() {
+  if (!stateHome) return { file: "not_initialized" };
+  const { value, ...record } = await readStateRecord(join(stateHome, "runtime", "install", "package-transition.json"));
+  if (record.file !== "present") return record;
+  return { ...record,
+    recordVersion: Number.isSafeInteger(value?.version) && value.version >= 0 && value.version <= 1000 ? value.version : undefined,
+    state: ["retiring", "retired"].includes(value?.state) ? value.state : "unrecognized",
+    sourceVersion: semver(value?.sourceVersion) };
+}
+
+// The PID record and its process are separate observations: a record can outlive its process.
+async function inspectBackendPid() {
+  if (!stateHome) return { file: "not_initialized", process: "not_probed" };
+  const { value, ...record } = await readStateRecord(pidPath());
+  if (record.file !== "present") return { ...record, process: "not_probed" };
+  if (!Number.isInteger(value?.pid) || value.pid <= 0) return { file: "invalid", process: "not_probed" };
+  const tracked = backendPids.has(value.pid);
+  try {
+    process.kill(value.pid, 0);
+    return { file: "present", process: "alive", tracked };
+  } catch (error) {
+    return error?.code === "ESRCH" ? { file: "present", process: "exited", tracked }
+      : withSystemCode({ file: "present", process: "unknown", tracked }, error);
+  }
+}
+
+async function readStateRecord(path) {
+  let text;
+  try { text = await readFile(path, "utf8"); }
+  catch (error) { return error?.code === "ENOENT" ? { file: "absent" } : withSystemCode({ file: "unreadable" }, error); }
+  try { return { file: "present", value: JSON.parse(text) }; }
+  catch { return { file: "unparseable" }; }
+}
+
+function withSystemCode(record, error) {
+  const code = systemCode(error?.code);
+  return code ? { ...record, code } : record;
 }
 
 function failureEvidence(functionalOutcome) {
@@ -536,7 +643,8 @@ function failureEvidence(functionalOutcome) {
     exitCode: report.exitCode, commandSignal: report.commandSignal, commandKilled: report.commandKilled,
     nativeErrorCode: report.nativeErrorCode, diagnosticCode: report.diagnosticCode, terminalError: report.terminalError,
     errorDetails: report.errorDetails, terminalDisposal: report.terminalDisposal,
-    cleanupStage: cleanup?.stage, cleanupCode, cleanupPath: cleanup?.path,
+    failureState: report.failureState, productDiagnostics: report.productDiagnostics, cleanupStop: report.cleanupStop,
+    cleanupStage: cleanup?.stage, cleanupCode, cleanupPath: cleanup?.path, cleanupBackendPid: cleanup?.backendPid,
     directoryRemoval: report.directoryRemoval,
     backendStarted: setupStarted,
     shutdownConfirmed: cleanup ? setupStarted && cleanup.stage === "directory_removal" : undefined,
@@ -640,10 +748,28 @@ async function stopAndVerify() {
   cleanupStage = "pid_record_read";
   await rememberPid();
   cleanupStage = "stop_command";
+  stopInvocations += 1;
   const stopped = await product(["stop", "--clients", "codex", "--json"]);
   cleanupStage = "stop_response";
   check(JSON.parse(stopped.stdout).ok === true, "Backend stop did not succeed");
   await assertStopped();
+}
+// The existing cleanup decision, recording whether it issued stop or why it did not.
+async function stopForCleanup() {
+  cleanupStage = "entrypoint_check";
+  const before = stopInvocations;
+  let skipReason = "entrypoint_check_failed";
+  try {
+    if (await exists(entrypoint)) {
+      skipReason = "pid_record_read_failed";
+      await stopAndVerify();
+    } else {
+      skipReason = "entrypoint_missing";
+      await assertStopped();
+    }
+  } finally {
+    report.cleanupStop = stopInvocations > before ? { invoked: true } : { invoked: false, skipReason };
+  }
 }
 async function assertStopped() {
   cleanupStage = "pid_record_removal";
