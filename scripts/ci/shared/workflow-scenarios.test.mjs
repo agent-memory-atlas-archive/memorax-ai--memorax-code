@@ -35,7 +35,8 @@ const manual = (inputs, ref = "refs/heads/main") => ({ event: "workflow_dispatch
 const called = (purpose) => ({ event: "workflow_dispatch", ref: "refs/heads/main",
   inputs: { purpose, "candidate-sha": "0".repeat(40), "docs-base-sha": "1".repeat(40) } });
 
-// The jobs each event or manual selection runs when every executed job succeeds. Main pushes still run the full set.
+// The jobs each event or manual selection runs when every executed job succeeds. A main push runs only the package
+// health check here and the basic checks in CI; pull requests and release acceptance run the complete acceptance.
 const SCENARIOS = {
   ci: [
     ["pull request to main", pullRequest(7), ["tests", "documentation"]],
@@ -47,7 +48,7 @@ const SCENARIOS = {
   native: [
     ["pull request to main", pullRequest(7), ACCEPTANCE],
     ["draft pull request to main", pullRequest(8, true), ACCEPTANCE],
-    ["push to main", push, ACCEPTANCE],
+    ["push to main", push, ["package"]],
     ["release acceptance on main", manual({ mode: "release-acceptance", expected_sha: "" }), RELEASE],
     ["release acceptance on a branch", manual({ mode: "release-acceptance", expected_sha: "" }, "refs/heads/feature"), RELEASE],
     ["provider-only diagnostic", manual({ mode: "provider-only", expected_sha: "" }), ["functional-result", "provider"]],
@@ -254,6 +255,47 @@ test("concurrency cancels only an older run of the same purpose and never a rele
   const caller = expand(workflows.native.match(/^  group: (.+)$/m)[1], context(release));
   const callee = expand(workflows.ci.match(/^  group: (.+)$/m)[1], context(called("release-acceptance")));
   assert.notEqual(caller, callee);
+});
+
+// Package job steps that ask npm or a desktop release feed for the latest client versions, or keep that answer, and
+// the package output through which client jobs consume each.
+const LOOKUPS = new Map([["codex-versions", "codex-matrix"], ["opencode-versions", "opencode-matrix"],
+  ["claude-versions", "claude-matrix"], ["codebuddy-versions", "codebuddy-matrix"], ["cursor-versions", "cursor-matrix"],
+  ["cursor-app-releases-attempt${{ github.run_attempt }}", "cursor-releases-artifact-name"]]);
+
+test("the package job asks for upstream versions only when a job consumes them and always checks the package", () => {
+  const native = jobs(workflows.native);
+  const text = native.find((job) => job.id === "package").text;
+  const outputs = Object.fromEntries([...text.split("\n    outputs:\n")[1].split("\n    steps:\n")[0]
+    .matchAll(/^      ([a-z-]+): (.+)$/gm)].map(([, name, value]) => [name, value]));
+  // A step is known by its ID, else by the artifact it uploads or its name.
+  const steps = `\n${text.split("\n    steps:\n")[1]}`.split("\n      - ").slice(1).map((step) => ({ text: step,
+    key: (step.match(/^        id: (.+)$/m) ?? step.match(/^          name: (.+)$/m) ?? step.match(/^(?:name|uses): (.+)$/m))[1],
+    condition: step.match(/^        if: (.+)$/m)?.[1] }));
+  // Every executed step succeeds, as in plan().
+  const runs = (step, scenario) => Boolean(evaluate(step.condition ?? "success()", { ...context(scenario), success: () => true,
+    steps: { "package-check": { outputs: { "artifact-ready": "true" } } } }));
+  const requests = steps.filter((step) => /\bnpm view |cursor-app-release\.mjs resolve-/.test(step.text)).map((step) => step.key);
+  assert.equal(requests.length, 5);
+  for (const key of requests) assert.ok(LOOKUPS.has(key), key);
+  const plans = SCENARIOS.native.map(([label, scenario]) => [label, scenario, plan(workflows.native, scenario)]);
+  for (const [key, output] of LOOKUPS) {
+    const step = steps.find((item) => item.key === key);
+    assert.ok(step, key);
+    assert.ok(outputs[output] === key || outputs[output] === `\${{ steps.${key}.outputs.matrix }}`, output);
+    const consumers = native.filter((job) => job.text.includes(`needs.package.outputs.${output}`)).map((job) => job.id);
+    assert.ok(consumers.length, output);
+    for (const [label, scenario, planned] of plans) {
+      assert.equal(planned.get("package").runs && runs(step, scenario), consumers.some((id) => planned.get(id).runs), `${label}: ${key}`);
+    }
+  }
+  // A main push skips only these lookups: it still verifies the contracts, builds and checks the package, and uploads it
+  // with its identity record.
+  assert.deepEqual(steps.filter((step) => runs(step, push)).map((step) => step.key),
+    steps.map((step) => step.key).filter((key) => !LOOKUPS.has(key)));
+  // Only the identity record and its upload may fail without failing the package job.
+  assert.deepEqual(steps.filter((step) => /^        continue-on-error: true$/m.test(step.text)).map((step) => step.key),
+    ["Record the candidate package and frozen client versions", "native-client-inputs-attempt${{ github.run_attempt }}"]);
 });
 
 test("release acceptance calls the basic checks with explicit inputs and reads the exact candidate artifact", () => {

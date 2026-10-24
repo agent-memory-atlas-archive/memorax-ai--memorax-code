@@ -43,10 +43,11 @@ function evaluateCondition(condition, options = {}) {
   }, { timeout: 100 }));
 }
 
-// Pull requests, main pushes and the manual release acceptance run Cursor; the other manual modes are diagnostics.
+// Pull requests and the manual release acceptance run Cursor; a main push runs only the package health check, and the
+// other manual modes are diagnostics.
 const SELECTIONS = [["pull_request"], ["push"], ...["release-acceptance", "provider-only", "opencode-initialization-diagnostic",
   "workbuddy-download-diagnostic"].map((mode) => ["workflow_dispatch", mode])];
-const acceptance = (event, mode) => event !== "workflow_dispatch" || mode === "release-acceptance";
+const acceptance = (event, mode) => event === "pull_request" || mode === "release-acceptance";
 
 test("Cursor App jobs retain normal triggers and exclude dedicated manual diagnostics", () => {
   for (const [event, mode] of SELECTIONS) {

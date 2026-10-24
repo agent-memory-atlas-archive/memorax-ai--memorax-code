@@ -604,7 +604,8 @@ const NPM_CLIENTS = { codex: "@openai/codex", opencode: "opencode-ai", claude: "
 // CodeBuddy versions are resolved against the public registry explicitly in the workflow.
 const EXPLICIT_REGISTRY = { codebuddy: "https://registry.npmjs.org/" };
 
-// Record the run's candidate package and frozen client versions with their sources and checksums.
+// Record the run's candidate package and frozen client versions with their sources and checksums. `--client-checks
+// NOT_APPLICABLE` marks a run whose native client checks do not apply, such as a main push.
 export async function recordManifest(output, options, { env = process.env, npm = ["npm"] } = {}) {
   const [npmFile, ...npmArgs] = npm;
   const lookup = async (name, version) => {
@@ -650,7 +651,7 @@ export async function recordManifest(output, options, { env = process.env, npm =
   const cursor = options["cursor-releases"];
   const manifest = compact({
     schemaVersion: EVIDENCE_SCHEMA, recordedAt: new Date().toISOString(), source: githubSource(env),
-    package: packageProvenance(options), clients,
+    package: packageProvenance(options), clientChecks: oneOf(options["client-checks"], ["NOT_APPLICABLE"]), clients,
     cursorReleases: cursor ? compact({
       artifact: githubText(options["cursor-releases-artifact-name"], /^[A-Za-z0-9._+-]{1,120}$/),
       sha256: (() => { try { return sha256File(cursor); } catch { return undefined; } })(),
