@@ -475,6 +475,23 @@ export function processAlive(pid) {
     throw error;
   }
 }
+// Lists `<job>/job.json` paths relative to jobsRoot, reading only the root and each direct job directory: never
+// `in-progress` or job subtrees such as the temporary `source` snapshot. An ENOENT from any of these reads means
+// no jobs for this poll. Callers read and check each listed file.
+export async function listRepoMemoryJobMetadataPaths(jobsRoot, { readDirectory = readdir } = {}) {
+  try {
+    const paths = [];
+    for (const entry of await readDirectory(jobsRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === "in-progress") continue;
+      if ((await readDirectory(join(jobsRoot, entry.name))).includes("job.json")) paths.push(join(entry.name, "job.json"));
+    }
+    return paths;
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    error.nativeOperation ??= "REPO_JOBS_READ";
+    throw error;
+  }
+}
 export async function stopNativeProcessTree(child, env) {
   if (!child.pid) return;
   let operation = "TASKKILL";

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, realpath } from "node:fs/promises";
+import { mkdir, readFile, realpath } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { assertNoSensitivePayload, check, createNativeHarness, describeSafeError, fixtureKey, fixtureModel, fixtureProvider, fixtureUser,
-  processAlive, searchResult, waitFor } from "./opencode-native-support.mjs";
+  listRepoMemoryJobMetadataPaths, processAlive, searchResult, waitFor } from "./opencode-native-support.mjs";
 import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
   assertWritebackMessages, expectedSearchAnswer } from "../codex/codex-native-content-check.mjs";
 import { createEvidenceRecorder } from "../shared/ci-evidence.mjs";
@@ -357,12 +357,8 @@ async function verifyBackgroundGlobalConfiguration() {
     const repository = await realpath(background.workspace);
     jobs = async () => {
       const jobsRoot = join(background.stateHome, "repo-memory-jobs");
-      const files = await readdir(jobsRoot, { recursive: true }).catch((error) => {
-        if (error.code === "ENOENT") return [];
-        error.nativeOperation ??= "REPO_JOBS_READ";
-        throw error;
-      });
-      return Promise.all(files.filter((file) => basename(file) === "job.json").map(async (file) => {
+      const files = await listRepoMemoryJobMetadataPaths(jobsRoot);
+      return Promise.all(files.map(async (file) => {
         let job;
         try { job = JSON.parse(await readFile(join(jobsRoot, file), "utf8")); }
         catch (error) { error.nativeOperation ??= "REPO_JOB_READ"; throw error; }
