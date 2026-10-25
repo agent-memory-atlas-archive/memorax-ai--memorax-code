@@ -131,6 +131,39 @@ async function waitFor(predicate, code, timeoutMs = 30000, onTimeout) {
   try { onTimeout?.("overall"); } catch { /* Diagnostics cannot replace the timeout. */ }
   check(false, code);
 }
+async function waitForDriverReady(predicate, timeoutMs, driver) {
+  // One readiness evaluation is in flight at a time. Past 5s it is recorded as slow and still awaited. A wait that stays
+  // pending fails at the strict deadline from the start of this wait, and a result observed at or after it never counts;
+  // App exit and predicate errors still end it earlier. An evaluation still in flight is left for stopApp() to settle.
+  const deadline = Date.now() + timeoutMs;
+  try { driver.closeAt(deadline); } catch { /* Diagnostics cannot change readiness. */ }
+  while (Date.now() < deadline) {
+    check(!app || (app.exitCode === null && app.signalCode === null), "CURSOR_APP_EXITED");
+    const startedAt = Date.now(), evaluation = Promise.resolve().then(predicate).then((ready) => ({ ready }));
+    let timer, onExit, outcome, slow = false;
+    try {
+      const exited = new Promise((resolve) => { onExit = () => resolve({ exited: true }); app?.once("exit", onExit); });
+      for (;;) {
+        const wakeAt = slow ? deadline : Math.min(deadline, startedAt + 5000);
+        outcome = await Promise.race([evaluation, exited, new Promise((resolve) => {
+          timer = setTimeout(() => resolve({ wake: true }), Math.max(0, wakeAt - Date.now()));
+        })]);
+        clearTimeout(timer);
+        if (!outcome.wake || Date.now() >= deadline) break;
+        if (!slow && Date.now() - startedAt >= 5000) {
+          slow = true;
+          try { driver.slow(); } catch { /* Diagnostics cannot change readiness. */ }
+        }
+      }
+    } finally { clearTimeout(timer); app?.removeListener("exit", onExit); }
+    check(!outcome.exited, "CURSOR_APP_EXITED");
+    if (Date.now() >= deadline) break;
+    if (outcome.ready) return;
+    await delay(Math.min(200, deadline - Date.now()));
+  }
+  try { driver.timeout("overall"); } catch { /* Diagnostics cannot replace the timeout. */ }
+  check(false, "CURSOR_APP_DRIVER");
+}
 function beginHookTiming(phase, sessionId, { runIndex = null, resumedSession = false } = {}) {
   if (!["linux", "darwin"].includes(process.platform)) return;
   activeHookTiming = { phase, appLaunch, sessionId, runIndex, resumedSession,
@@ -440,7 +473,7 @@ async function startApp() {
     appDebugEndpointSeen = true;
     browser = await chromium.connectOverCDP(endpoint?.get() ?? `http://127.0.0.1:${debugPort}`, { timeout: 5000 });
     driver.connected(); driver.beginWait();
-    await waitFor(async () => {
+    await waitForDriverReady(async () => {
       const contexts = browser.contexts(), pages = contexts.flatMap((context) => context.pages());
       page = pages.find((item) => item.url().includes("workbench.html"));
       let workbenchCount = null;
@@ -450,7 +483,7 @@ async function startApp() {
       return page && await page.evaluate(() => Boolean(window.driver)).then((ready) => {
         driver.resolved(probe, ready); return ready;
       }).catch((error) => { driver.rejected(probe, error); return false; });
-    }, "CURSOR_APP_DRIVER", windows ? 90000 : 30000, (kind) => driver.timeout(kind));
+    }, windows ? 90000 : 30000, driver);
     driverReady = true;
   } finally { driver.finish(driverReady ? "ready" : "failed"); }
   page.setDefaultTimeout(10000);

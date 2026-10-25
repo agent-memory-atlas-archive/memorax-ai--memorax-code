@@ -153,6 +153,7 @@ test("App launch preserves the sandbox and isolated arguments with a longer Wind
       fetch: async () => ({ ok: true }), bounded: (promise) => promise,
       chromium: { connectOverCDP: async () => ({ contexts: () => [{ pages: () => [page] }] }) },
       async waitFor(predicate, code, deadline) { waits.push([code, deadline]); assert.equal(await predicate(), true); },
+      async waitForDriverReady(predicate, deadline) { waits.push(["CURSOR_APP_DRIVER", deadline]); assert.equal(await predicate(), true); },
       spawn(file, args, options) {
         assert.equal(file, "/owned/app"); assert.equal(options.shell, undefined);
         argumentsSeen.push(...args);
@@ -825,6 +826,8 @@ test("driver readiness reports absent pages, absent drivers, evaluation rejectio
     const bounded = nativeFunction("bounded", { setTimeout, clearTimeout });
     const waitFor = nativeFunction("waitFor", { app: child, bounded, Date: { now: () => clock },
       async delay(milliseconds) { assert.equal(milliseconds, 200); clock += mode === "ready" ? 200 : 90000; } });
+    const waitForDriverReady = nativeFunction("waitForDriverReady", { app: child, Date: { now: () => clock }, setTimeout, clearTimeout,
+      async delay(milliseconds) { assert.equal(milliseconds, 200); clock += mode === "ready" ? 200 : 90000; } });
     const original = Object.assign(new Error(privateCanary), { code: "SYNTHETIC_CDP_FAILURE" });
     const start = nativeFunction("startApp", {
       process: { platform: "win32" }, macos: undefined, windows: {}, report, AbortSignal,
@@ -837,6 +840,9 @@ test("driver readiness reports absent pages, absent drivers, evaluation rejectio
         return { contexts: () => [{ pages: () => mode === "page-absent" ? [] : mode === "first-page-only" ? [first, second] : [first] }] };
       } },
       async waitFor(predicate, code, deadline, onTimeout) { deadlines.push([code, deadline]); return waitFor(predicate, code, deadline, onTimeout); },
+      async waitForDriverReady(predicate, deadline, driver) {
+        deadlines.push(["CURSOR_APP_DRIVER", deadline]); return waitForDriverReady(predicate, deadline, driver);
+      },
     });
     if (mode === "ready") await start();
     else await assert.rejects(start(), error => mode === "cdp-failed" ? error === original : error.code === "CURSOR_APP_DRIVER");
@@ -865,31 +871,152 @@ test("driver readiness reports absent pages, absent drivers, evaluation rejectio
   }
 });
 
-test("a stalled driver evaluation retains the 5s predicate timeout and ignores late results", async (t) => {
-  let clock = 0, resolveEvaluation;
-  const child = childProcess(), report = {}, timers = [];
+// Virtual time for readiness tests: timers fire in due order (one may be made late), and pending promise work drains
+// between them. External events such as an evaluation settling are scheduled at absolute times.
+function virtualClock({ lateMs = () => 0 } = {}) {
+  let clock = 0, sequence = 0;
+  const timers = new Map();
+  const at = (time, callback) => { const id = ++sequence; timers.set(id, { time, callback, id }); return id; };
+  return { at, now: () => clock,
+    setTimeout: (callback, milliseconds) => at(clock + milliseconds + lateMs(clock + milliseconds), callback),
+    clearTimeout: id => { timers.delete(id); },
+    async run() {
+      for (let step = 0; step < 1000; step++) {
+        for (let turn = 0; turn < 10; turn++) await new Promise(setImmediate);
+        const [next] = [...timers.values()].sort((a, b) => a.time - b.time || a.id - b.id);
+        if (!next) return;
+        timers.delete(next.id); clock = Math.max(clock, next.time); next.callback();
+      }
+      throw new Error("virtual clock did not settle");
+    } };
+}
+// Starts the App through the real readiness helper; evaluate(n) returns the n-th readiness evaluation's promise.
+async function driverReadiness(t, { platform = "win32", lateMs, evaluate, events = () => {} }) {
+  const clock = virtualClock({ lateMs }), child = childProcess(), report = {}, starts = [];
+  let inFlight = 0, maxInFlight = 0, outcome, settledReport;
   t.after(() => { child.stdout.end(); child.stderr.end(); });
-  const bounded = nativeFunction("bounded", { setTimeout(callback, milliseconds) {
-    timers.push(milliseconds); return setImmediate(() => { clock += milliseconds; callback(); });
-  }, clearTimeout: clearImmediate });
-  const waitFor = nativeFunction("waitFor", { app: child, bounded, Date: { now: () => clock }, async delay() { assert.fail("pending evaluation must not poll"); } });
-  const page = { url: () => "file:///workbench.html", evaluate: () => new Promise(resolve => { resolveEvaluation = resolve; }) };
-  const start = nativeFunction("startApp", { process: { platform: "win32" }, macos: undefined, windows: {}, report, AbortSignal,
-    createCursorAppDriverDiagnostics: options => createCursorAppDriverDiagnostics({ ...options, now: () => clock }),
+  const page = { url: () => "file:///workbench.html", setDefaultTimeout() {},
+    evaluate(callback) {
+      if (!String(callback).includes("Boolean(window.driver)")) return Promise.resolve();
+      starts.push(clock.now()); inFlight += 1; maxInFlight = Math.max(maxInFlight, inFlight);
+      return Promise.resolve(evaluate(starts.length, clock)).finally(() => { inFlight -= 1; });
+    } };
+  const delay = milliseconds => new Promise(resolve => clock.setTimeout(resolve, milliseconds));
+  const bounded = nativeFunction("bounded", { setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+  const waitFor = nativeFunction("waitFor", { app: child, bounded, Date: { now: clock.now }, delay });
+  const waitForDriverReady = nativeFunction("waitForDriverReady", { app: child, Date: { now: clock.now },
+    setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout, delay });
+  const start = nativeFunction("startApp", { process: { platform }, macos: undefined, windows: platform === "win32" ? {} : undefined,
+    report, AbortSignal, Date: { now: clock.now },
+    createCursorAppDriverDiagnostics: options => createCursorAppDriverDiagnostics({ ...options, now: clock.now }),
     appPath: "/owned/app", userData: "/owned/app-data", root: "/owned", workspace: "/owned/workspace", env: {},
-    agent: { url: "http://127.0.0.1:12345" }, debugPort: 12346, spawn: () => child,
-    fetch: async () => ({ ok: true }), bounded, waitFor,
-    chromium: { connectOverCDP: async () => ({ contexts: () => [{ pages: () => [page] }] }) },
-  });
-  await assert.rejects(start(), { code: "CURSOR_APP_DRIVER" });
-  assert.deepEqual(timers, [5000, 5000]);
-  assert.equal(report.appDriver.timeoutKind, "predicate");
-  assert.equal(report.appDriver.waitElapsedMs, 5000);
-  assert.equal(report.appDriver.lastProbe.evaluation, "pending");
-  assert.equal(report.appDriver.lastProbe.completedElapsedMs, null);
-  const before = JSON.stringify(report);
-  resolveEvaluation(true); await new Promise(setImmediate);
-  assert.equal(JSON.stringify(report), before);
+    agent: { url: "http://127.0.0.1:12345" }, debugPort: 12346, spawn: () => child, fetch: async () => ({ ok: true }),
+    bounded, waitFor, waitForDriverReady,
+    chromium: { connectOverCDP: async () => ({ contexts: () => [{ pages: () => [page] }] }) } });
+  events(clock, child);
+  const done = start().then(() => ({ ok: true }), error => ({ ok: false, code: error.code }))
+    .then(value => { outcome = { ...value, at: clock.now() }; settledReport = JSON.stringify(report); });
+  await clock.run(); await done;
+  return { outcome, report, settledReport, starts, maxInFlight, clock };
+}
+const settleAt = (clock, time, settle) => new Promise((resolve, reject) => clock.at(time, () => settle(resolve, reject)));
+
+test("a slow driver evaluation stays the only one in flight and its result before the deadline counts", async (t) => {
+  const run = await driverReadiness(t, { evaluate: (n, clock) => settleAt(clock, 7000, resolve => resolve(true)) });
+  assert.deepEqual(run.outcome, { ok: true, at: 7000 });
+  assert.deepEqual(run.starts, [0]);
+  assert.equal(run.maxInFlight, 1);
+  const value = run.report.appDriver;
+  assert.equal(value.outcome, "ready"); assert.equal(value.timeoutKind, "none");
+  assert.equal(value.probeCount, 1); assert.equal(value.slowProbeCount, 1);
+  assert.equal(value.lastProbe.slowAtElapsedMs, 5000); assert.equal(value.lastProbe.completedElapsedMs, 7000);
+  assert.equal(value.lastProbe.driverState, "ready"); assert.equal(value.waitElapsedMs, 7000);
+});
+
+test("a driver evaluation that never returns fails only at the strict deadline and late results cannot change it", async (t) => {
+  for (const [platform, deadline] of [["win32", 90000], ["linux", 30000]]) {
+    for (const late of [undefined, resolve => resolve(true),
+      (resolve, reject) => reject(new Error("Target page, context or browser has been closed"))]) {
+      const run = await driverReadiness(t, { platform,
+        evaluate: (n, clock) => late ? settleAt(clock, deadline + 10, late) : new Promise(() => {}) });
+      assert.deepEqual(run.outcome, { ok: false, code: "CURSOR_APP_DRIVER", at: deadline });
+      assert.deepEqual(run.starts, [0]);
+      const value = run.report.appDriver;
+      assert.equal(value.outcome, "failed"); assert.equal(value.timeoutKind, "overall");
+      assert.equal(value.waitElapsedMs, deadline); assert.equal(value.slowProbeCount, 1);
+      assert.equal(value.lastProbe.evaluation, "pending"); assert.equal(value.lastProbe.slowAtElapsedMs, 5000);
+      assert.equal(value.lastProbe.completedElapsedMs, null);
+      assert.equal(JSON.stringify(run.report), run.settledReport);
+    }
+  }
+});
+
+test("a driver result observed after the deadline stays a failure when the deadline timer runs late", async (t) => {
+  const run = await driverReadiness(t, { lateMs: time => time === 90000 ? 50 : 0,
+    evaluate: (n, clock) => settleAt(clock, 90010, resolve => resolve(true)) });
+  assert.deepEqual(run.outcome, { ok: false, code: "CURSOR_APP_DRIVER", at: 90010 });
+  const value = run.report.appDriver;
+  assert.equal(value.outcome, "failed"); assert.equal(value.timeoutKind, "overall");
+  assert.equal(value.lastProbe.evaluation, "pending"); assert.equal(value.lastProbe.driverState, "unobserved");
+  assert.equal(JSON.stringify(run.report), run.settledReport);
+});
+
+test("the App exiting during an in-flight driver evaluation fails at once without another evaluation", async (t) => {
+  const run = await driverReadiness(t, { evaluate: (n, clock) => settleAt(clock, 20000, resolve => resolve(true)),
+    events: (clock, child) => clock.at(6000, () => { child.exitCode = 0; child.emit("exit", 0, null); }) });
+  assert.deepEqual(run.outcome, { ok: false, code: "CURSOR_APP_EXITED", at: 6000 });
+  assert.deepEqual(run.starts, [0]);
+  assert.equal(run.report.appDriver.outcome, "failed");
+  assert.equal(run.report.appDriver.lastProbe.evaluation, "pending");
+  assert.equal(JSON.stringify(run.report), run.settledReport);
+});
+
+test("slow false and rejected driver evaluations keep one in flight and never overrun the deadline", async (t) => {
+  const run = await driverReadiness(t, { evaluate: (n, clock) => n === 1 ? settleAt(clock, 6000, resolve => resolve(false))
+    : n === 2 ? settleAt(clock, 7200, (resolve, reject) => reject(new Error("Execution context was destroyed")))
+      : true });
+  assert.deepEqual(run.outcome, { ok: true, at: 7400 });
+  assert.deepEqual(run.starts, [0, 6200, 7400]);
+  assert.equal(run.maxInFlight, 1);
+  assert.equal(run.report.appDriver.slowProbeCount, 1);
+  assert.equal(run.report.appDriver.firstProbe.slowAtElapsedMs, 5000);
+  assert.equal(run.report.appDriver.firstProbe.driverState, "absent");
+  const tail = await driverReadiness(t, { platform: "linux", evaluate: (n, clock) => settleAt(clock, 29900, resolve => resolve(false)) });
+  assert.deepEqual(tail.outcome, { ok: false, code: "CURSOR_APP_DRIVER", at: 30000 });
+  assert.deepEqual(tail.starts, [0]);
+});
+
+test("a slow driver probe is recorded when its result arrives before a late slow timer", async (t) => {
+  const settles = [["true", resolve => resolve(true)], ["false", resolve => resolve(false)],
+    ["rejection", (resolve, reject) => reject(new Error("Execution context was destroyed"))]];
+  for (const [label, settle] of settles) {
+    const run = await driverReadiness(t, { lateMs: time => time === 5000 ? 3000 : 0,
+      evaluate: (n, clock) => n === 1 ? settleAt(clock, 7000, settle) : true });
+    assert.deepEqual(run.outcome, { ok: true, at: label === "true" ? 7000 : 7200 }, label);
+    assert.deepEqual(run.starts, label === "true" ? [0] : [0, 7200], label);
+    assert.equal(run.maxInFlight, 1, label);
+    const value = run.report.appDriver;
+    assert.equal(value.slowProbeCount, 1, label);
+    assert.equal(value.firstProbe.slowAtElapsedMs, 7000, label);
+    assert.equal(value.firstProbe.completedElapsedMs, 7000, label);
+    assert.equal(value.firstProbe.evaluation, label === "rejection" ? "rejected" : "resolved", label);
+  }
+  // A slow timer that fires on time and the completed result do not count the same probe twice.
+  const onTime = await driverReadiness(t, { evaluate: (n, clock) => settleAt(clock, 7000, resolve => resolve(true)) });
+  assert.equal(onTime.report.appDriver.slowProbeCount, 1);
+  assert.equal(onTime.report.appDriver.lastProbe.slowAtElapsedMs, 5000);
+});
+
+test("readiness observers and predicate errors keep their existing precedence", async () => {
+  const observer = () => { throw new Error(privateCanary); };
+  let clock = 0;
+  const helper = nativeFunction("waitForDriverReady", { app: undefined, Date: { now: () => clock },
+    setTimeout: (callback, milliseconds) => setImmediate(() => { clock += milliseconds; callback(); }), clearTimeout: clearImmediate,
+    async delay() { assert.fail("a pending evaluation must not poll"); } });
+  await assert.rejects(helper(() => new Promise(() => {}), 90000, { closeAt: observer, slow: observer, timeout: observer }),
+    { code: "CURSOR_APP_DRIVER" });
+  const original = Object.assign(new Error(privateCanary), { code: "SYNTHETIC_PREDICATE_FAILURE" });
+  await assert.rejects(helper(() => { throw original; }, 90000, { closeAt() {}, slow() {}, timeout() {} }), error => error === original);
 });
 
 test("readiness timeout observers cannot replace predicate or overall timeout errors", async () => {
