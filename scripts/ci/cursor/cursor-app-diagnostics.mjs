@@ -81,11 +81,13 @@ export function projectCursorAppDriverDiagnostics(value) {
     driverState: enumValue(input.driverState, ["unobserved", "absent", "ready"], "unobserved"),
     evaluation: enumValue(input.evaluation, ["not-started", "pending", "resolved", "rejected"], "not-started"),
     evaluationFailure: enumValue(input.evaluationFailure, ["none", "page-closed", "context-destroyed", "timeout", "other"], "none"),
+    slowAtElapsedMs: time(input.slowAtElapsedMs),
   };
   return {
     cdpConnected: typeof value?.cdpConnected === "boolean" ? value.cdpConnected : null,
     cdpConnectedElapsedMs: time(value?.cdpConnectedElapsedMs), elapsedMs: time(value?.elapsedMs),
     waitElapsedMs: time(value?.waitElapsedMs), probeCount: number(value?.probeCount, 10000),
+    slowProbeCount: number(value?.slowProbeCount, 10000),
     outcome: enumValue(value?.outcome, ["pending", "ready", "failed"], "unavailable"),
     timeoutKind: enumValue(value?.timeoutKind, ["none", "predicate", "overall"], "unavailable"),
     firstProbe: probe(value?.firstProbe), lastProbe: probe(value?.lastProbe),
@@ -94,12 +96,25 @@ export function projectCursorAppDriverDiagnostics(value) {
 
 export function createCursorAppDriverDiagnostics({ now = Date.now, onUpdate } = {}) {
   const startedAt = now();
-  let finished = false, finishedAt = null, waitStartedAt = null;
-  const value = { cdpConnected: false, cdpConnectedElapsedMs: null, probeCount: 0,
+  let finished = false, finishedAt = null, waitStartedAt = null, closesAt = null;
+  const value = { cdpConnected: false, cdpConnectedElapsedMs: null, probeCount: 0, slowProbeCount: 0,
     outcome: "pending", timeoutKind: "none", firstProbe: null, lastProbe: null };
+  // Probe results observed at or after the readiness deadline are ignored, even before finish().
+  const open = () => !finished && (closesAt === null || now() < closesAt);
   const elapsed = () => {
     const duration = now() - startedAt;
     return Number.isFinite(duration) ? Math.min(600000, Math.max(0, Math.round(duration))) : null;
+  };
+  // slowAtElapsedMs is when a probe was first observed to be slow: the 5s mark while pending, or its completion when
+  // that comes first. Each probe counts once.
+  const markSlow = (probe, at = elapsed()) => {
+    if (probe.slowAtElapsedMs !== null) return;
+    probe.slowAtElapsedMs = at; value.slowProbeCount = Math.min(10000, value.slowProbeCount + 1);
+  };
+  const complete = (probe) => {
+    const at = elapsed();
+    probe.completedElapsedMs = at;
+    if (at - probe.elapsedMs >= 5000) markSlow(probe, at);
   };
   const snapshot = () => {
     const at = finished ? finishedAt : elapsed();
@@ -119,24 +134,30 @@ export function createCursorAppDriverDiagnostics({ now = Date.now, onUpdate } = 
       if (finished) return null;
       const probe = { elapsedMs: elapsed(), completedElapsedMs: pageSelected ? null : elapsed(),
         contextCount, pageCount, workbenchCount, driverState: "unobserved",
-        evaluation: pageSelected ? "pending" : "not-started", evaluationFailure: "none" };
+        evaluation: pageSelected ? "pending" : "not-started", evaluationFailure: "none", slowAtElapsedMs: null };
       value.probeCount = Math.min(10000, value.probeCount + 1);
       value.firstProbe ??= probe; value.lastProbe = probe; publish();
       return probe;
     },
     resolved(probe, ready) {
-      if (finished || !probe) return;
+      if (!open() || !probe) return;
       probe.driverState = ready ? "ready" : "absent";
-      probe.evaluation = "resolved"; probe.completedElapsedMs = elapsed(); publish();
+      probe.evaluation = "resolved"; complete(probe); publish();
     },
     rejected(probe, error) {
-      if (finished || !probe) return;
+      if (!open() || !probe) return;
       const message = typeof error?.message === "string" ? error.message.slice(0, 8192) : "";
-      probe.evaluation = "rejected"; probe.completedElapsedMs = elapsed();
+      probe.evaluation = "rejected"; complete(probe);
       probe.evaluationFailure = /(?:Target page, context or browser|Page) has been closed/i.test(message) ? "page-closed"
         : /Execution context was destroyed/i.test(message) ? "context-destroyed"
           : error?.name === "TimeoutError" || /\bTimeout \d+ms exceeded\b/.test(message) ? "timeout" : "other";
       publish();
+    },
+    closeAt(deadline) { if (!finished && Number.isFinite(deadline)) closesAt = deadline; },
+    slow() {
+      const probe = value.lastProbe;
+      if (!open() || probe?.evaluation !== "pending" || probe.slowAtElapsedMs !== null) return;
+      markSlow(probe); publish();
     },
     timeout(kind) { if (!finished && value.timeoutKind === "none") { value.timeoutKind = kind; publish(); } },
     finish(outcome) {

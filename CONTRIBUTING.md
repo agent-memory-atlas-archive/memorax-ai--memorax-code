@@ -1581,9 +1581,15 @@ Progress snapshots cannot establish acceptance: a successful native exit and a
 complete final report with every existing assertion are still required.
 
 The `appDriver` startup observation records CDP connection, page and workbench
-counts, first and last driver probes, fixed evaluation outcomes, and relative
-times. It distinguishes an individual probe timeout from the overall readiness
-window. Page selection and readiness limits stay unchanged; URLs, page titles
+counts, first and last driver probes, fixed evaluation outcomes, slow probes, and
+relative times. Driver readiness keeps one evaluation in flight. An evaluation
+that takes 5 seconds or more is recorded as slow when this is first observed, and
+a pending one is still awaited. A wait that stays pending fails at a strict
+window that starts after CDP connection, 90 seconds on Windows and 30 seconds
+elsewhere; App exit and other existing errors still fail it earlier. A result
+observed at or after that deadline never counts and leaves the report unchanged.
+A probe still pending at the deadline shows only that its evaluation did not
+complete within the window. Page selection stays unchanged; URLs, page titles
 and evaluation error text are excluded.
 
 Windows process-query diagnostics retain the first failed query and the last

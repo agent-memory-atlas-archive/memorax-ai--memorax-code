@@ -399,8 +399,11 @@ test("driver readiness keeps first and last probes, frozen timings and unavailab
   assert.equal(result.firstProbe.pageCount, 0);
   assert.equal(result.lastProbe.driverState, "ready");
   assert.equal(result.lastProbe.completedElapsedMs, 260);
+  assert.equal(result.slowProbeCount, 0);
+  assert.equal(result.lastProbe.slowAtElapsedMs, null);
   assert.equal(pending.lastProbe.evaluation, "pending");
   clock = 900000;
+  driver.closeAt(0); driver.slow();
   driver.timeout("overall"); driver.rejected(second, new Error(privateCanary)); driver.resolved(first, true);
   driver.connected(); driver.beginWait(); driver.beginProbe({ pageSelected: true }); driver.finish("failed");
   assert.deepEqual(driver.snapshot(), result);
@@ -410,6 +413,62 @@ test("driver readiness keeps first and last probes, frozen timings and unavailab
   assert.equal(absent.probeCount, null);
   assert.equal(absent.elapsedMs, null);
   assert.equal(absent.timeoutKind, "unavailable");
+  assert.equal(absent.slowProbeCount, null);
+});
+
+test("driver readiness marks a pending probe slow once and ignores probe results at or after its deadline", () => {
+  let clock = 100;
+  const driver = createCursorAppDriverDiagnostics({ now: () => clock });
+  driver.connected(); driver.beginWait(); driver.closeAt(1100);
+  driver.slow();
+  assert.equal(driver.snapshot().slowProbeCount, 0);
+  const absent = driver.beginProbe({ contextCount: 1, pageCount: 0, workbenchCount: 0, pageSelected: false });
+  driver.slow();
+  assert.equal(absent.slowAtElapsedMs, null);
+  clock = 200;
+  const probe = driver.beginProbe({ contextCount: 1, pageCount: 1, workbenchCount: 1, pageSelected: true });
+  clock = 700; driver.slow();
+  clock = 800; driver.slow();
+  assert.equal(driver.snapshot().slowProbeCount, 1);
+  assert.equal(driver.snapshot().lastProbe.slowAtElapsedMs, 600);
+  clock = 1100;
+  driver.resolved(probe, true); driver.rejected(probe, new Error(privateCanary)); driver.slow();
+  driver.timeout("overall");
+  const result = driver.finish("failed");
+  assert.equal(result.timeoutKind, "overall");
+  assert.equal(result.slowProbeCount, 1);
+  assert.equal(result.lastProbe.evaluation, "pending");
+  assert.equal(result.lastProbe.driverState, "unobserved");
+  assert.equal(result.lastProbe.completedElapsedMs, null);
+  assert.equal(result.waitElapsedMs, 1000);
+  redacted(result);
+});
+
+test("a driver probe that completes after 5s is slow at its completion, once, and never after its deadline", () => {
+  let clock = 0;
+  const driver = createCursorAppDriverDiagnostics({ now: () => clock });
+  driver.connected(); driver.beginWait(); driver.closeAt(40000);
+  const probe = () => driver.beginProbe({ contextCount: 1, pageCount: 1, workbenchCount: 1, pageSelected: true });
+  const quick = probe();
+  clock = 4999; driver.resolved(quick, false);
+  assert.equal(quick.slowAtElapsedMs, null);
+  const absent = probe();
+  clock = 9999; driver.resolved(absent, false);
+  const rejected = probe();
+  clock = 15000; driver.rejected(rejected, new Error("Execution context was destroyed"));
+  const ready = probe();
+  clock = 20000; driver.slow();
+  clock = 21000; driver.resolved(ready, true);
+  assert.deepEqual([absent, rejected, ready].map((item) => item.slowAtElapsedMs), [9999, 15000, 20000]);
+  assert.equal(driver.snapshot().slowProbeCount, 3);
+  const late = probe();
+  clock = 40000; driver.resolved(late, true);
+  const result = driver.finish("failed");
+  assert.equal(result.slowProbeCount, 3);
+  assert.equal(result.lastProbe.evaluation, "pending");
+  assert.equal(result.lastProbe.slowAtElapsedMs, null);
+  clock = 50000; driver.resolved(late, true);
+  assert.deepEqual(driver.snapshot(), result);
 });
 
 test("driver evaluation failures have fixed categories and retain no error messages, URLs or titles", () => {
@@ -434,12 +493,13 @@ test("driver evaluation failures have fixed categories and retain no error messa
     redacted(result);
   }
   const result = projectCursorAppDriverDiagnostics({ cdpConnected: "true", cdpConnectedElapsedMs: -1,
-    probeCount: 10001, elapsedMs: Infinity, waitElapsedMs: 600001, outcome: privateCanary, timeoutKind: privateCanary,
-    firstProbe: { elapsedMs: 0, completedElapsedMs: 0, contextCount: 0, pageCount: 10001, workbenchCount: 1.5,
+    probeCount: 10001, slowProbeCount: -1, elapsedMs: Infinity, waitElapsedMs: 600001, outcome: privateCanary, timeoutKind: privateCanary,
+    firstProbe: { elapsedMs: 0, completedElapsedMs: 0, contextCount: 0, pageCount: 10001, workbenchCount: 1.5, slowAtElapsedMs: 600001,
       driverState: privateCanary, evaluation: privateCanary, evaluationFailure: privateCanary, url: privateCanary },
     lastProbe: privateCanary, title: privateCanary, rawError: privateCanary });
   assert.equal(result.cdpConnected, null);
-  for (const key of ["cdpConnectedElapsedMs", "probeCount", "elapsedMs", "waitElapsedMs"]) assert.equal(result[key], null);
+  for (const key of ["cdpConnectedElapsedMs", "probeCount", "slowProbeCount", "elapsedMs", "waitElapsedMs"]) assert.equal(result[key], null);
+  assert.equal(result.firstProbe.slowAtElapsedMs, null);
   assert.equal(result.firstProbe.contextCount, 0);
   assert.equal(result.firstProbe.pageCount, null);
   assert.equal(result.firstProbe.workbenchCount, null);
