@@ -281,28 +281,95 @@ and artifact changes require Install/artifacts in addition to affected suites.
 The CI workflow and the
 [native client functional workflow](.github/workflows/macos-codex-install.yml)
 run on every pull request targeting `main`, including drafts, and on every push
-to `main`, without path or diff filters. Pull request runs report these eight
-checks, which together form the merge gate for `main`:
+to `main`, without path filters. Pull request runs report these three checks,
+which together form the merge gate for `main`:
 
 | Check | Workflow | Covers |
 | --- | --- | --- |
 | `Tests` | CI | Basic regression suite |
 | `Documentation` | CI | Documentation contracts and README synchronization |
-| `WorkBuddy functional result` | Native client functional checks | Package job, WorkBuddy release resolution and entire WorkBuddy matrix |
-| `Codex functional result` | Native client functional checks | Package job and entire Codex matrix |
-| `OpenCode functional result` | Native client functional checks | Package job and entire OpenCode matrix |
-| `Claude native smoke result` | Native client functional checks | Package job and entire Claude Code matrix |
-| `CodeBuddy functional result` | Native client functional checks | Package job and entire CodeBuddy Code matrix |
-| `Cursor App canary result` | Native client functional checks | Package job and entire Cursor App matrix |
+| `PR acceptance` | Native client functional checks | Native client scope, package job, contract tests and the result of every client the scope selects |
 
-Each result job also runs after a dependency fails; failed, cancelled, or
-skipped dependencies fail it. Push, manual, and release acceptance runs reuse
-only the `Tests` and `Documentation` names, whose jobs always execute. Manual
-result names add the mode, such as `(release-acceptance)`, and provider-only
-runs report `Codex provider-only result`. These results stay visible without
-being mistaken for pull request acceptance. In each workflow, a
-newer run cancels an older one only for the same pull request, for pushes to
-`main`, or for the same manual mode on the same ref; release acceptance runs
+Every pull request runs the `Native client scope` job, the package job with its
+CI script contract tests and `make npm-package-check`, and the WorkBuddy
+releases job's contract tests. The scope job compares the pull request merge
+commit with its base and selects the clients whose native matrices the changed
+files can affect, using the rules in
+[native-scope.mjs](scripts/ci/shared/native-scope.mjs). It narrows the native
+matrices for documentation, standalone tests and client CI files; a product
+adapter change still runs every client's matrix, as described below.
+
+- Documentation (`docs/`, root Markdown files, `LICENSE`, issue and pull request
+  templates, and lint configuration) selects no client.
+- A shared or unclassified file selects every client. Shared files are the
+  canonical Skill and the client Hook runtime, in the `skills/`, `src/` and
+  `runtime-hooks/` directories of the Codex and Claude adapters, and the
+  adapter-common, Backend and npm packages. Unclassified files include root
+  files such as the `Makefile`, the workflows, `scripts/ci/shared/`, and any
+  other file outside a client's directories.
+- A client's CI file selects that client: `scripts/ci/<client>/`, and
+  `scripts/fixtures/cursor-app/` for Cursor App. A test, under a `test/`
+  directory or named `*.test.*`, selects no client by itself.
+- Either one also selects every client whose native job names it, directly or
+  by glob, or names or owns a file that names it. These references are followed
+  by file name across directories, so a Codex helper that every client's checks
+  import selects every client, and a file named by a shared or unclassified file
+  selects every client. Mentions in documentation, workflows and the `Makefile`
+  do not count.
+- DSH and Qoder CI files select no client; this workflow has no native matrix
+  for them.
+
+Product adapter changes are the conservative boundary of this version: they
+still run every client's complete native matrix, and the scope does not route
+adapter changes precisely. It assigns each adapter
+(`packages/ts/memorax-code-<client>-adapter/`) to its clients (the CodeBuddy
+adapter to CodeBuddy and WorkBuddy, and the DSH, Qoder and Trae adapters to
+none), but shared code names every adapter file other than tests, so the
+references above select every client. Some of these references are real:
+`memorax-code-setup.mjs` imports adapter path and configuration modules, and the
+Backend loads client plugin installers and configuration to clean up removed
+plugins. Others only match a file of the same name. An adapter's tests run in
+`Tests` and select no client. Narrow an adapter path only when it is shown to be
+independent and keeps blocking unrelated pull requests.
+
+The rules follow file names, not paths a script builds at run time; such a file
+is covered only through its client's directory. A repository file that cannot
+be read, other than a link to a directory, fails the scope job instead of being
+skipped.
+Contract tests that only the package or WorkBuddy releases job runs, such as
+`codebuddy-native-content-check.test.mjs`, select no client, because every pull
+request runs them. The scope job's summary lists each changed file with its
+clients and reason.
+
+A selected client keeps its complete matrix: the same baseline and latest
+versions, platforms, and suites as release acceptance. The package job resolves
+client and desktop release versions only for selected clients, and the WorkBuddy
+releases job asks for WorkBuddy releases only when WorkBuddy is selected. An
+unselected client resolves no version, runs no matrix, and skips its result job.
+Each selected client still reports `Codex functional result`,
+`OpenCode functional result`, `Claude native smoke result`,
+`CodeBuddy functional result`, `Cursor App canary result`, or
+`WorkBuddy functional result`; the WorkBuddy result also requires the release
+resolution.
+
+`PR acceptance` requires the scope, package, and WorkBuddy releases jobs to
+succeed, every selected client's result to succeed, and every unselected
+client's result to be skipped. Anything else fails it: a selected client that
+was skipped or cancelled, an unselected client whose result ran, a missing or
+malformed selection, or a failed scope, which selects no client. Its summary
+reports each unselected client as `not selected: this pull request does not
+validate it`; not running a client's matrix is never reported as passing it.
+
+`PR acceptance` and each selected client's result job also run after a
+dependency fails; failed, cancelled, or skipped dependencies fail them. Push,
+scheduled, manual, and release acceptance runs reuse only the `Tests` and
+`Documentation` names, whose jobs always execute. Their other result names add
+the purpose, such as `(main push)`, `(compatibility monitor)`, or
+`(release-acceptance)`, and provider-only runs report
+`Codex provider-only result`. These results stay visible without being mistaken
+for pull request acceptance. In each workflow, a newer run cancels an older one
+only for the same pull request, for pushes to `main`, for compatibility
+monitors, or for the same manual mode on the same ref; release acceptance runs
 are never cancelled.
 
 A push to `main` runs a health check, not this acceptance: pull requests run it
@@ -311,21 +378,39 @@ and `Documentation`, the native client functional workflow then runs only its
 package job: the CI script contract tests, `make npm-package-check` with its
 isolated installation smoke tests, and the package checksum, upload, and input
 record, which marks native client checks `NOT_APPLICABLE`. It resolves no client
-or desktop release versions and skips every client matrix, WorkBuddy, and result
-job. These skipped placeholders never carry a merge check name and claim no
-functional acceptance.
+or desktop release versions and skips the scope, every client matrix, WorkBuddy,
+PR acceptance, and result job. These skipped placeholders never carry a merge
+check name and claim no functional acceptance.
 
-Protect `main` in GitHub branch protection by requiring these eight checks from
-GitHub Actions, requiring branches to be up to date before merging, requiring a
-pull request before merging, and including administrators. When `main` moves,
-update an open pull request to rerun both workflows on the new merge result.
-This setting is managed separately from the workflows. The `Tests` check runs
-`scripts/ci/shared/workflow-scenarios.test.mjs`. It evaluates the expressions
+The native client functional workflow also runs on `main` every day at 03:17
+UTC as a compatibility monitor. Like release acceptance, it resolves every
+client's baseline and latest versions and runs every client's complete matrix,
+including WorkBuddy, but it records no release candidate. It neither gates
+merges nor accepts a release: a failure shows that a client release, platform,
+or service changed, or that `main` regressed for a client that no recent pull
+request selected. GitHub sends a scheduled run's failure notification only to
+the user who last changed its `cron` line, so maintainers should review the
+monitor's runs.
+
+Protect `main` in GitHub branch protection by requiring `Tests`,
+`Documentation`, and `PR acceptance` from GitHub Actions, requiring branches to
+be up to date before merging, requiring a pull request before merging, and
+including administrators. Do not require the client result checks: `PR
+acceptance` already requires the result of every selected client, and an
+unselected client's result job is skipped, so a required client result would
+either never report under its formal name or report a skip that validates
+nothing. When `main` moves, update
+an open pull request to rerun both workflows on the new merge result. This
+setting is managed separately from the workflows. The `Tests` check runs
+`scripts/ci/shared/workflow-scenarios.test.mjs` and
+`scripts/ci/shared/native-scope.test.mjs`. The first evaluates the expressions
 these workflows use for triggers, job conditions, the package job's version
-lookups, check names, and concurrency groups in each event and manual
-selection, and runs each result script against failed, cancelled, and skipped
-dependencies. It is a source contract, not a complete model of GitHub Actions
-execution.
+lookups, check names, and concurrency groups in each event, manual selection,
+and client selection, and runs each result script, including `PR acceptance`,
+against failed, cancelled, and skipped dependencies and partial selections. The
+second checks the selection rules, the command on a merge commit, and this
+repository's own files. Both are source contracts, not a complete model of
+GitHub Actions execution.
 
 ### Release Acceptance
 
@@ -335,7 +420,9 @@ defaults to `mode=release-acceptance`. It runs the complete acceptance for the
 dispatched commit: the CI workflow's `Tests` and `Documentation` jobs, called
 with an explicit purpose, candidate commit, and comparison base; the package
 job's single candidate tarball; and every client matrix, including WorkBuddy.
-The other modes, `provider-only`, `opencode-initialization-diagnostic`, and
+It never applies the pull request scope: it resolves every client's versions,
+runs every matrix, and skips the scope and `PR acceptance` jobs. The other
+modes, `provider-only`, `opencode-initialization-diagnostic`, and
 `workbuddy-download-diagnostic`, are isolated diagnostics and never accept a
 release.
 
@@ -450,7 +537,9 @@ WSL run does not replace native Windows validation.
 
 Live-provider, MemoraX-backed, and live Jev checks are explicit opt-in tests.
 The credential-free Codex, OpenCode, Claude, CodeBuddy, and WorkBuddy functional checks
-below run by default on PRs. Report
+below run on each pull request whose changes can affect that client (see
+[Merge Checks](#merge-checks)), in the daily compatibility monitor, and in
+release acceptance. Report
 native-client and synthetic evidence separately, record platform and scenarios,
 redact output, and explain any relevant checks not run. Public fixtures must never contain
 real API keys, private transcripts, personal memory, or infrastructure
@@ -505,8 +594,16 @@ Native-client runners, helpers, and their adjacent tests are grouped under
 - `codex/`, `claude/`, `dsh/`, `opencode/`, `cursor/`, and `qoder/` own each client's checks.
 - `codebuddy-workbuddy/` owns both clients' entrypoints and shared checks.
 - `shared/` owns cross-client cleanup tests, Windows user PATH utilities, the
-  first-failure evidence recorder, the workflow scenario contract and the
-  release acceptance record.
+  first-failure evidence recorder, the workflow scenario contract, the pull
+  request native client scope and the release acceptance record.
+
+The pull request scope relies on this layout: a file in a client's CI directory
+selects that client, and a file elsewhere selects every client. Product adapter
+changes also select every client in this version (see
+[Merge Checks](#merge-checks)). Add a new client's CI directory and adapter to
+`OWNERS` in [native-scope.mjs](scripts/ci/shared/native-scope.mjs) when its
+native job is added, and add shared code that lives in an adapter, like the
+canonical Skill, to its shared rule.
 
 Keep existing Make targets as the developer entrypoints. Repository-wide build,
 package, documentation, and release scripts remain directly in `scripts/`;
@@ -590,8 +687,10 @@ earlier failure as fixed. To keep evidence from a local run, set
 ### Codex Functional CI
 
 The [native client functional workflow](.github/workflows/macos-codex-install.yml)
-runs on pull requests targeting `main`, pushes to `main`, and manual dispatch;
-a push to `main` runs only its package job (see [Merge Checks](#merge-checks)).
+runs on pull requests targeting `main`, pushes to `main`, a daily compatibility
+monitor, and manual dispatch. A pull request runs a client's matrix only when its
+scope selects that client, and a push to `main` runs only its package job (see
+[Merge Checks](#merge-checks)).
 Reuse the basic `Tests` and `Documentation` jobs above; this workflow adds
 installed-package and native-client evidence. It does not copy the source
 regression suites.
@@ -1183,7 +1282,8 @@ bundled runtime have distinct versions. Do not substitute the independently
 installed CodeBuddy CLI for that runtime.
 
 The native client functional workflow runs WorkBuddy native checks automatically
-for pull requests targeting `main` and release acceptance, on `ubuntu-24.04` (x64), `macos-15`
+for pull requests targeting `main` that select WorkBuddy, the compatibility monitor
+and release acceptance, on `ubuntu-24.04` (x64), `macos-15`
 (arm64), and `windows-2025` (x64), using Node.js 24. Each platform runs its
 fixed baseline and the latest official desktop release resolved once for that
 run, subject to the narrow Windows fallback below. Identical full versions,
@@ -1191,16 +1291,19 @@ URLs, and checksums (advisory on Linux) share one `baseline+latest`
 job; a different desktop build still gets a separate job even if its bundled
 CLI version is unchanged. One additional Ubuntu job uses the minimum supported
 Node.js 20 with the fixed Linux baseline. All four to seven jobs run the complete
-default suites. A separate job resolves the release matrix and runs the
-WorkBuddy contract tests without building a package; every platform consumes the
+default suites. A separate job runs the WorkBuddy contract tests on every pull
+request and, when the run includes WorkBuddy, resolves the release matrix,
+without building a package; every platform consumes the
 package job's validated candidate, the same artifact as the other clients.
 Manual `mode=workbuddy-download-diagnostic` runs only the package and WorkBuddy
 jobs. Matrix failures do not cancel the other platforms.
 The `WorkBuddy functional result` check requires both the package and the entire
 native matrix to succeed. Failed, cancelled, or unexpectedly skipped dependencies
-fail that check. Release acceptance and the WorkBuddy diagnostic report it with
-their mode, such as `WorkBuddy functional result (release-acceptance)`; the other
-manual modes skip it. Each cell also uploads a `workbuddy-report-*` artifact with
+fail that check. Release acceptance, the WorkBuddy diagnostic and the
+compatibility monitor report it with their purpose, such as
+`WorkBuddy functional result (release-acceptance)`; the other manual modes skip
+it, as does a pull request that does not select WorkBuddy. Each cell also
+uploads a `workbuddy-report-*` artifact with
 its run and attempt, verified desktop and bundled CLI versions, channel, download
 host, and the reference and actual SHA-256 with their match or warning status, for
 the release record. The aggregate also requires the release resolution and its
@@ -1458,7 +1561,8 @@ identities share a cell; Linux also runs baseline on Node 22.13 or newer for its
 native SQLite reader. The native-check process must use the selected Node
 version, including inside the Linux container.
 
-Release resolution runs once in the package job. Every cell consumes the frozen
+Release resolution runs once in the package job of each run that includes Cursor
+App. Every cell consumes the frozen
 inventory and the same validated candidate npm artifact, with no latest-version
 fallback. Package, lifecycle, native acceptance and cleanup failures fail the
 aggregate; a local or single-platform pass is not three-platform evidence.

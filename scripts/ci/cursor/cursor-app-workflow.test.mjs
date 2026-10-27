@@ -34,24 +34,30 @@ function selected(id, options = {}) {
   return evaluateCondition(condition, options);
 }
 
+// Only a pull request has a native client scope, which selects Cursor unless `cursor` says otherwise.
 function evaluateCondition(condition, options = {}) {
-  const { event = "pull_request", mode, cancelled = false } = options;
+  const { event = "pull_request", mode, cancelled = false, cursor = "true" } = options;
   const ready = Object.hasOwn(options, "ready") ? options.ready : "true";
   return Boolean(runInNewContext(condition.replaceAll("needs.package.outputs.artifact-ready", 'needs.package.outputs["artifact-ready"]'), {
     github: { event_name: event }, inputs: event === "workflow_dispatch" ? { mode } : {},
-    needs: { package: { outputs: { "artifact-ready": ready } } }, always: () => true, cancelled: () => cancelled,
+    needs: { scope: { outputs: event === "pull_request" ? { cursor } : {} }, package: { outputs: { "artifact-ready": ready } } },
+    always: () => true, cancelled: () => cancelled,
   }, { timeout: 100 }));
 }
 
-// Pull requests and the manual release acceptance run Cursor; a main push runs only the package health check, and the
-// other manual modes are diagnostics.
-const SELECTIONS = [["pull_request"], ["push"], ...["release-acceptance", "provider-only", "opencode-initialization-diagnostic",
-  "workbuddy-download-diagnostic"].map((mode) => ["workflow_dispatch", mode])];
-const acceptance = (event, mode) => event === "pull_request" || mode === "release-acceptance";
+// Pull requests whose scope selects Cursor, the compatibility monitor and the manual release acceptance run Cursor; a main
+// push runs only the package health check, and the other manual modes are diagnostics.
+const SELECTIONS = [["pull_request"], ["pull_request", undefined, "false"], ["pull_request", undefined, ""], ["push"], ["schedule"],
+  ...["release-acceptance", "provider-only", "opencode-initialization-diagnostic", "workbuddy-download-diagnostic"]
+    .map((mode) => ["workflow_dispatch", mode])];
+const acceptance = (event, mode, cursor = "true") => (event === "pull_request" ? cursor === "true"
+  : event === "schedule" || mode === "release-acceptance");
 
-test("Cursor App jobs retain normal triggers and exclude dedicated manual diagnostics", () => {
-  for (const [event, mode] of SELECTIONS) {
-    for (const id of ["cursor-app", "cursor-app-result"]) assert.equal(selected(id, { event, mode }), acceptance(event, mode), `${id}: ${event} ${mode}`);
+test("Cursor App jobs follow the pull request scope, retain normal triggers and exclude dedicated manual diagnostics", () => {
+  for (const [event, mode, cursor] of SELECTIONS) {
+    for (const id of ["cursor-app", "cursor-app-result"]) {
+      assert.equal(selected(id, { event, mode, cursor }), acceptance(event, mode, cursor), `${id}: ${event} ${mode} ${cursor}`);
+    }
   }
   for (const ready of [undefined, "", "false"]) assert.equal(selected("cursor-app", { ready }), false);
   assert.equal(selected("cursor-app", { cancelled: true }), false);
@@ -66,7 +72,7 @@ test("Cursor App jobs retain normal triggers and exclude dedicated manual diagno
 test("Cursor App matrix uses the validated candidate, frozen release inventory and unique public reports", () => {
   const canary = job("cursor-app"), result = job("cursor-app-result");
   assert.match(job("package"), /^        run: node --test scripts\/ci\/cursor\/cursor-app-\*\.test\.mjs scripts\/ci\/cursor\/cursor-lifecycle-\*\.test\.mjs$/m);
-  assert.match(canary, /^    needs: package$/m);
+  assert.match(canary, /^    needs: \[scope, package\]$/m);
   assert.match(canary, /^    runs-on: \$\{\{ matrix\.os \}\}$/m);
   assert.match(canary, /^          node-version: \$\{\{ matrix\.node \}\}$/m);
   assert.match(canary, /^    name: Cursor App \$\{\{ matrix\.channel \}\} \$\{\{ matrix\.cursor \}\} \(\$\{\{ matrix\.os \}\}, Node \$\{\{ matrix\.node \}\}\)$/m);
@@ -83,7 +89,7 @@ test("Cursor App matrix uses the validated candidate, frozen release inventory a
     assert.match(uploads[index], /^          if-no-files-found: error$/m);
     assert.match(uploads[index], new RegExp(`^          name: cursor-${kind}-\\$\\{\\{ matrix\\.os \\}\\}-\\$\\{\\{ matrix\\.channel \\}\\}-node-\\$\\{\\{ matrix\\.node \\}\\}-report-attempt\\$\\{\\{ github\\.run_attempt \\}\\}$`, "m"));
   }
-  assert.match(result, /^    needs: \[package, cursor-app\]$/m);
+  assert.match(result, /^    needs: \[scope, package, cursor-app\]$/m);
   assert.doesNotMatch(canary + result, /continue-on-error:/);
   assert.doesNotMatch(canary, /resolve-linux|api\/download|latest\.json/);
 });
@@ -104,7 +110,11 @@ test("Cursor release acquisition runs once outside the matrix and excludes dedic
   const step = job("package").split("      - name: Resolve and freeze Cursor App releases once for this run\n")[1];
   const condition = step.match(/^        if: (.+)$/m)?.[1];
   assert.ok(condition);
-  for (const [event, mode] of SELECTIONS) assert.equal(evaluateCondition(condition, { event, mode }), acceptance(event, mode), `${event} ${mode}`);
+  for (const [event, mode, cursor] of SELECTIONS) {
+    assert.equal(evaluateCondition(condition, { event, mode, cursor }), acceptance(event, mode, cursor), `${event} ${mode} ${cursor}`);
+  }
+  // The inventory upload requires the file, so it follows the same selection.
+  assert.equal(step.split("      - uses: actions/upload-artifact@v4\n")[1]?.match(/^        if: (.+)$/m)?.[1], condition);
   assert.equal((source.match(/node scripts\/ci\/cursor\/cursor-app-release\.mjs resolve-linux/g) ?? []).length, 1);
   assert.match(step, /name: cursor-app-releases-attempt\$\{\{ github\.run_attempt \}\}\n          path: \$\{\{ runner\.temp \}\}\/cursor-app-releases\.json\n          if-no-files-found: error/);
 });

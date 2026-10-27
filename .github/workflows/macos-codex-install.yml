@@ -20,19 +20,53 @@ on:
     branches: [main]
   push:
     branches: [main]
+  schedule:
+    # Compatibility monitor: the complete native matrix against every client's baseline and latest versions on main.
+    - cron: '17 3 * * *'
 
 permissions:
   contents: read
 
 concurrency:
-  # A newer run cancels only an older run of the same purpose: one pull request, main pushes, or one diagnostic mode on one ref.
+  # A newer run cancels only an older run of the same purpose: one pull request, main pushes, compatibility monitors, or
+  # one diagnostic mode on one ref.
   # Each release acceptance has its own group and is never cancelled by another run.
   group: codex-install-${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'release-acceptance' && format('release-{0}', github.run_id) || format('{0}-{1}', github.event_name == 'workflow_dispatch' && format('manual-{0}', inputs.mode) || github.event_name, github.ref) }}
   cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && inputs.mode == 'release-acceptance') }}
 
 jobs:
+  scope:
+    # A pull request runs the native matrix of each client its changes can affect; see scripts/ci/shared/native-scope.mjs.
+    name: Native client scope
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      codex: ${{ steps.scope.outputs.codex }}
+      opencode: ${{ steps.scope.outputs.opencode }}
+      claude: ${{ steps.scope.outputs.claude }}
+      codebuddy: ${{ steps.scope.outputs.codebuddy }}
+      cursor: ${{ steps.scope.outputs.cursor }}
+      workbuddy: ${{ steps.scope.outputs.workbuddy }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The pull request merge commit with both parents: the base and the pull request head.
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Select the native clients this pull request can affect
+        id: scope
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/ci/shared/native-scope.mjs select --expected-head "$PR_HEAD_SHA" --github-output "$GITHUB_OUTPUT" --github-summary "$GITHUB_STEP_SUMMARY"
+
   package:
-    if: github.event_name != 'workflow_dispatch' || inputs.mode != 'provider-only'
+    needs: scope
+    if: always() && !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.mode != 'provider-only')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     outputs:
@@ -56,9 +90,10 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
-      # Client versions are resolved only for runs whose client matrices consume them.
+      # Client versions are resolved only for runs whose client matrices consume them: the clients a pull request selects,
+      # and every client in the compatibility monitor and release acceptance.
       - name: Resolve the latest Codex version once for this run
-        if: github.event_name == 'pull_request' || inputs.mode == 'release-acceptance'
+        if: needs.scope.outputs.codex == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
         id: codex-versions
         shell: bash
         run: |
@@ -81,7 +116,7 @@ jobs:
             `${include.length} required installation, native-flow and permission jobs; no version fallback.\n`);
           NODE
       - name: Resolve the latest OpenCode version once for this run
-        if: github.event_name == 'pull_request' || inputs.mode == 'release-acceptance'
+        if: needs.scope.outputs.opencode == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
         id: opencode-versions
         shell: bash
         run: |
@@ -104,7 +139,7 @@ jobs:
             `${include.length} required installation, native-flow and permission jobs; no version fallback.\n`);
           NODE
       - name: Resolve the latest Claude Code version once for this run
-        if: github.event_name == 'pull_request' || inputs.mode == 'release-acceptance'
+        if: needs.scope.outputs.claude == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
         id: claude-versions
         shell: bash
         run: |
@@ -127,7 +162,7 @@ jobs:
             `${include.length} required lifecycle, interruption, native memory, Skill, permission and Repo Memory configuration jobs; no version fallback. Client-specific coverage remains bounded.\n`);
           NODE
       - name: Resolve the latest CodeBuddy Code version once for this run
-        if: github.event_name == 'pull_request' || inputs.mode == 'release-acceptance'
+        if: needs.scope.outputs.codebuddy == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
         id: codebuddy-versions
         shell: bash
         run: |
@@ -150,7 +185,7 @@ jobs:
             `${include.length} required lifecycle, interruption, native memory, Skill, permission and Repo Memory configuration jobs; no version fallback. WorkBuddy is outside this scope; client-specific coverage remains bounded.\n`);
           NODE
       - name: Resolve and freeze Cursor App releases once for this run
-        if: github.event_name == 'pull_request' || inputs.mode == 'release-acceptance'
+        if: needs.scope.outputs.cursor == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
         id: cursor-versions
         shell: bash
         run: |
@@ -186,7 +221,7 @@ jobs:
             `${include.length} required Linux, macOS and Windows App jobs, including Linux baseline on Node 22. No version fallback.\n`);
           NODE
       - uses: actions/upload-artifact@v4
-        if: github.event_name == 'pull_request' || inputs.mode == 'release-acceptance'
+        if: needs.scope.outputs.cursor == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
         with:
           name: cursor-app-releases-attempt${{ github.run_attempt }}
           path: ${{ runner.temp }}/cursor-app-releases.json
@@ -275,8 +310,8 @@ jobs:
 
   install:
     name: Codex ${{ matrix.channel }} ${{ matrix.codex }} (${{ matrix.os }}, Node ${{ matrix.node }})
-    needs: package
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance')
+    needs: [scope, package]
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (needs.scope.outputs.codex == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.codex-matrix) }}
@@ -382,8 +417,8 @@ jobs:
 
   opencode:
     name: OpenCode ${{ matrix.channel }} ${{ matrix.opencode }} (${{ matrix.os }}, Node ${{ matrix.node }})
-    needs: package
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance')
+    needs: [scope, package]
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (needs.scope.outputs.opencode == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.opencode-matrix) }}
@@ -491,8 +526,8 @@ jobs:
 
   claude:
     name: Claude smoke ${{ matrix.channel }} ${{ matrix.claude }} (${{ matrix.os }}, Node ${{ matrix.node }})
-    needs: package
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance')
+    needs: [scope, package]
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (needs.scope.outputs.claude == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.claude-matrix) }}
@@ -588,8 +623,8 @@ jobs:
 
   codebuddy:
     name: CodeBuddy functional ${{ matrix.channel }} ${{ matrix.codebuddy }} (${{ matrix.os }}, Node ${{ matrix.node }})
-    needs: package
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance')
+    needs: [scope, package]
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (needs.scope.outputs.codebuddy == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.codebuddy-matrix) }}
@@ -628,8 +663,8 @@ jobs:
 
   cursor-app:
     name: Cursor App ${{ matrix.channel }} ${{ matrix.cursor }} (${{ matrix.os }}, Node ${{ matrix.node }})
-    needs: package
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance')
+    needs: [scope, package]
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (needs.scope.outputs.cursor == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.cursor-matrix) }}
@@ -695,7 +730,8 @@ jobs:
 
   workbuddy-releases:
     name: WorkBuddy releases
-    if: github.event_name == 'pull_request' || inputs.mode == 'release-acceptance' || inputs.mode == 'workbuddy-download-diagnostic'
+    needs: scope
+    if: always() && !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance' || inputs.mode == 'workbuddy-download-diagnostic')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     outputs:
@@ -722,6 +758,8 @@ jobs:
       - name: Verify WorkBuddy and shared native test contracts
         run: node --test scripts/ci/codebuddy-workbuddy/codebuddy-*.test.mjs scripts/ci/codebuddy-workbuddy/workbuddy-*.test.mjs
       - name: Resolve each platform's latest release once
+        # Every run verifies the contracts above; a pull request asks for WorkBuddy releases only when it selects WorkBuddy.
+        if: github.event_name != 'pull_request' || needs.scope.outputs.workbuddy == 'true'
         id: releases
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -729,8 +767,8 @@ jobs:
 
   workbuddy-native:
     name: WorkBuddy native (${{ matrix.os }}, Node ${{ matrix.node }}, ${{ matrix.release.channel }}, ${{ matrix.release.desktopVersion }})
-    needs: [package, workbuddy-releases]
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && needs.workbuddy-releases.result == 'success' && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance' || inputs.mode == 'workbuddy-download-diagnostic')
+    needs: [scope, package, workbuddy-releases]
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && needs.workbuddy-releases.result == 'success' && (needs.scope.outputs.workbuddy == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance' || inputs.mode == 'workbuddy-download-diagnostic')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.workbuddy-releases.outputs.matrix) }}
@@ -1006,11 +1044,12 @@ jobs:
           Remove-Item -LiteralPath $root -Recurse -Force
 
   opencode-result:
-    # Only pull request runs report the formal result names; manual runs add their mode. Main pushes skip these jobs;
-    # the (main push) suffix keeps even their skipped placeholders from carrying a formal name.
-    name: ${{ github.event_name == 'pull_request' && 'OpenCode functional result' || format('OpenCode functional result ({0})', github.event_name == 'push' && 'main push' || inputs.mode) }}
-    if: always() && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance')
-    needs: [package, opencode]
+    # Only pull request runs report the formal result names, and a pull request skips the result of a client it does not
+    # select; the compatibility monitor and manual runs add their purpose. Main pushes skip these jobs; the (main push)
+    # suffix keeps even their skipped placeholders from carrying a formal name.
+    name: ${{ github.event_name == 'pull_request' && 'OpenCode functional result' || format('OpenCode functional result ({0})', github.event_name == 'push' && 'main push' || github.event_name == 'schedule' && 'compatibility monitor' || inputs.mode) }}
+    if: always() && (needs.scope.outputs.opencode == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance')
+    needs: [scope, package, opencode]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -1027,9 +1066,9 @@ jobs:
           fi
 
   claude-result:
-    name: ${{ github.event_name == 'pull_request' && 'Claude native smoke result' || format('Claude native smoke result ({0})', github.event_name == 'push' && 'main push' || inputs.mode) }}
-    if: always() && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance')
-    needs: [package, claude]
+    name: ${{ github.event_name == 'pull_request' && 'Claude native smoke result' || format('Claude native smoke result ({0})', github.event_name == 'push' && 'main push' || github.event_name == 'schedule' && 'compatibility monitor' || inputs.mode) }}
+    if: always() && (needs.scope.outputs.claude == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance')
+    needs: [scope, package, claude]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -1046,9 +1085,9 @@ jobs:
           fi
 
   codebuddy-result:
-    name: ${{ github.event_name == 'pull_request' && 'CodeBuddy functional result' || format('CodeBuddy functional result ({0})', github.event_name == 'push' && 'main push' || inputs.mode) }}
-    if: always() && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance')
-    needs: [package, codebuddy]
+    name: ${{ github.event_name == 'pull_request' && 'CodeBuddy functional result' || format('CodeBuddy functional result ({0})', github.event_name == 'push' && 'main push' || github.event_name == 'schedule' && 'compatibility monitor' || inputs.mode) }}
+    if: always() && (needs.scope.outputs.codebuddy == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance')
+    needs: [scope, package, codebuddy]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -1065,9 +1104,9 @@ jobs:
           fi
 
   cursor-app-result:
-    name: ${{ github.event_name == 'pull_request' && 'Cursor App canary result' || format('Cursor App canary result ({0})', github.event_name == 'push' && 'main push' || inputs.mode) }}
-    if: always() && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance')
-    needs: [package, cursor-app]
+    name: ${{ github.event_name == 'pull_request' && 'Cursor App canary result' || format('Cursor App canary result ({0})', github.event_name == 'push' && 'main push' || github.event_name == 'schedule' && 'compatibility monitor' || inputs.mode) }}
+    if: always() && (needs.scope.outputs.cursor == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance')
+    needs: [scope, package, cursor-app]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -1085,11 +1124,12 @@ jobs:
           fi
 
   workbuddy-result:
-    # Only pull request runs report the formal result name; manual runs add their mode. Main pushes skip this job;
-    # the (main push) suffix keeps even its skipped placeholder from carrying the formal name.
-    name: ${{ github.event_name == 'pull_request' && 'WorkBuddy functional result' || format('WorkBuddy functional result ({0})', github.event_name == 'push' && 'main push' || inputs.mode) }}
-    if: always() && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance' || inputs.mode == 'workbuddy-download-diagnostic')
-    needs: [package, workbuddy-releases, workbuddy-native]
+    # Only pull request runs report the formal result name, and a pull request that does not select WorkBuddy skips it;
+    # the compatibility monitor and manual runs add their purpose. Main pushes skip this job; the (main push) suffix keeps
+    # even its skipped placeholder from carrying the formal name.
+    name: ${{ github.event_name == 'pull_request' && 'WorkBuddy functional result' || format('WorkBuddy functional result ({0})', github.event_name == 'push' && 'main push' || github.event_name == 'schedule' && 'compatibility monitor' || inputs.mode) }}
+    if: always() && (needs.scope.outputs.workbuddy == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance' || inputs.mode == 'workbuddy-download-diagnostic')
+    needs: [scope, package, workbuddy-releases, workbuddy-native]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -1112,9 +1152,9 @@ jobs:
           fi
 
   functional-result:
-    name: ${{ github.event_name == 'pull_request' && 'Codex functional result' || github.event_name == 'workflow_dispatch' && inputs.mode == 'provider-only' && 'Codex provider-only result' || format('Codex functional result ({0})', github.event_name == 'push' && 'main push' || inputs.mode) }}
-    if: always() && (github.event_name == 'pull_request' || inputs.mode == 'release-acceptance' || inputs.mode == 'provider-only')
-    needs: [package, install, provider]
+    name: ${{ github.event_name == 'pull_request' && 'Codex functional result' || github.event_name == 'workflow_dispatch' && inputs.mode == 'provider-only' && 'Codex provider-only result' || format('Codex functional result ({0})', github.event_name == 'push' && 'main push' || github.event_name == 'schedule' && 'compatibility monitor' || inputs.mode) }}
+    if: always() && (needs.scope.outputs.codex == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance' || inputs.mode == 'provider-only')
+    needs: [scope, package, install, provider]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -1134,6 +1174,59 @@ jobs:
           printf 'Package: **%s**\n\nCodex matrix: **%s**\n' "$PACKAGE_RESULT" "$INSTALL_RESULT" >> "$GITHUB_STEP_SUMMARY"
           if [[ "$PACKAGE_RESULT" != success || "$INSTALL_RESULT" != success ]]; then
             echo '::error::All package and Codex matrix jobs must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+            exit 1
+          fi
+
+  pr-acceptance:
+    # The pull request merge gate. A client the scope does not select is reported as not validated, never as passed.
+    name: ${{ github.event_name == 'pull_request' && 'PR acceptance' || format('PR acceptance ({0})', github.event_name == 'push' && 'main push' || github.event_name == 'schedule' && 'compatibility monitor' || inputs.mode) }}
+    if: always() && github.event_name == 'pull_request'
+    needs: [scope, package, workbuddy-releases, functional-result, opencode-result, claude-result, codebuddy-result, cursor-app-result, workbuddy-result]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require the scope, package, contracts and every selected client to succeed
+        shell: bash
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          CONTRACTS_RESULT: ${{ needs.workbuddy-releases.result }}
+          CODEX_SELECTED: ${{ needs.scope.outputs.codex }}
+          CODEX_RESULT: ${{ needs.functional-result.result }}
+          OPENCODE_SELECTED: ${{ needs.scope.outputs.opencode }}
+          OPENCODE_RESULT: ${{ needs.opencode-result.result }}
+          CLAUDE_SELECTED: ${{ needs.scope.outputs.claude }}
+          CLAUDE_RESULT: ${{ needs.claude-result.result }}
+          CODEBUDDY_SELECTED: ${{ needs.scope.outputs.codebuddy }}
+          CODEBUDDY_RESULT: ${{ needs.codebuddy-result.result }}
+          CURSOR_SELECTED: ${{ needs.scope.outputs.cursor }}
+          CURSOR_RESULT: ${{ needs.cursor-app-result.result }}
+          WORKBUDDY_SELECTED: ${{ needs.scope.outputs.workbuddy }}
+          WORKBUDDY_RESULT: ${{ needs.workbuddy-result.result }}
+        run: |
+          failed=0
+          printf '### PR acceptance\n\n| Check | Result |\n|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
+          for check in "Native client scope=$SCOPE_RESULT" "Package=$PACKAGE_RESULT" "Contract tests (WorkBuddy releases job)=$CONTRACTS_RESULT"; do
+            printf '| %s | %s |\n' "${check%%=*}" "${check#*=}" >> "$GITHUB_STEP_SUMMARY"
+            [[ "${check#*=}" == success ]] || failed=1
+          done
+          for client in Codex=CODEX OpenCode=OPENCODE Claude=CLAUDE CodeBuddy=CODEBUDDY 'Cursor App=CURSOR' WorkBuddy=WORKBUDDY; do
+            selected_name="${client#*=}_SELECTED"
+            result_name="${client#*=}_RESULT"
+            selected="${!selected_name}"
+            result="${!result_name}"
+            if [[ "$selected" == true && "$result" == success ]]; then
+              status='selected: passed'
+            elif [[ "$selected" == false && "$result" == skipped ]]; then
+              status='not selected: this pull request does not validate it'
+            else
+              status="failed: selected '$selected', result '$result'"
+              failed=1
+            fi
+            printf '| %s | %s |\n' "${client%%=*}" "$status" >> "$GITHUB_STEP_SUMMARY"
+          done
+          if [[ "$failed" != 0 ]]; then
+            echo '::error::The scope, package and contract tests must succeed, every selected client must pass and every other client must be skipped. A skipped selected client does not pass.'
             exit 1
           fi
 

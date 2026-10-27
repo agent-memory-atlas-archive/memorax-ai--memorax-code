@@ -21,13 +21,15 @@ function job(id, text = source) {
   return parts[1].split(/\n  [a-z][a-z0-9-]*:\n/)[0];
 }
 
-// Evaluate a job condition; the hyphenated dependency outputs used here become bracket lookups.
-function selected(condition, { event, mode, ready = "true", releases = "success" }) {
+// Evaluate a job condition; the hyphenated dependency outputs used here become bracket lookups. Only a pull request has a
+// native client scope, which selects WorkBuddy unless `workbuddy` says otherwise.
+function selected(condition, { event, mode, ready = "true", releases = "success", workbuddy = "true" }) {
   const code = condition.replaceAll("needs.package.outputs.artifact-ready", 'needs.package.outputs["artifact-ready"]')
     .replaceAll("needs.workbuddy-releases.result", 'needs["workbuddy-releases"].result');
   return Boolean(runInNewContext(code, {
     github: { event_name: event }, inputs: event === "workflow_dispatch" ? { mode } : {},
-    needs: { package: { outputs: { "artifact-ready": ready } }, "workbuddy-releases": { result: releases } },
+    needs: { scope: { outputs: event === "pull_request" ? { workbuddy } : {} }, package: { outputs: { "artifact-ready": ready } },
+      "workbuddy-releases": { result: releases } },
     always: () => true, cancelled: () => false,
   }, { timeout: 100 }));
 }
@@ -47,17 +49,38 @@ test("WorkBuddy CI automatically listens to main PRs and pushes without path fil
   assert.doesNotMatch(ci, /^  workbuddy-/m);
 });
 
+// Every pull request runs the WorkBuddy contracts in workbuddy-releases; only one that selects WorkBuddy runs the matrix.
 for (const id of ["workbuddy-releases", "workbuddy-native", "workbuddy-result"]) {
-  test(`${id} runs for pull requests, release acceptance and the WorkBuddy diagnostic only`, () => {
+  test(`${id} runs for selecting pull requests, the compatibility monitor, release acceptance and the WorkBuddy diagnostic only`, () => {
     const condition = job(id).match(/^    if: (.+)$/m)?.[1];
     assert.ok(condition);
     if (id === "workbuddy-result") assert.match(condition, /^always\(\) && /);
-    for (const [event, mode] of [["pull_request"], ["push"], ...MODES.map((item) => ["workflow_dispatch", item])]) {
-      const expected = event === "pull_request" || ["release-acceptance", "workbuddy-download-diagnostic"].includes(mode);
-      assert.equal(selected(condition, { event, mode }), expected, `${event}, mode=${mode}`);
+    for (const [event, mode] of [["pull_request"], ["push"], ["schedule"], ...MODES.map((item) => ["workflow_dispatch", item])]) {
+      for (const workbuddy of event === "pull_request" ? ["true", "false", ""] : ["true"]) {
+        const expected = event === "pull_request" ? id === "workbuddy-releases" || workbuddy === "true"
+          : event === "schedule" || ["release-acceptance", "workbuddy-download-diagnostic"].includes(mode);
+        assert.equal(selected(condition, { event, mode, workbuddy }), expected, `${event}, mode=${mode}, workbuddy=${workbuddy}`);
+      }
     }
   });
 }
+
+test("a pull request that does not select WorkBuddy verifies the contracts without asking for releases", () => {
+  const releases = job("workbuddy-releases");
+  assert.match(releases, /^    needs: scope$/m);
+  const steps = releases.split("\n      - ").slice(1);
+  const resolve = steps.find((step) => step.startsWith("name: Resolve each platform's latest release once\n"));
+  const condition = resolve?.match(/^        if: (.+)$/m)?.[1];
+  assert.ok(condition);
+  for (const workbuddy of ["true", "false", ""]) {
+    assert.equal(selected(condition, { event: "pull_request", workbuddy }), workbuddy === "true", `workbuddy=${workbuddy}`);
+  }
+  for (const [event, mode] of [["schedule"], ["workflow_dispatch", "release-acceptance"], ["workflow_dispatch", "workbuddy-download-diagnostic"]]) {
+    assert.equal(selected(condition, { event, mode }), true, `${event}, mode=${mode}`);
+  }
+  // The parser setup and the contracts run in every run of the job.
+  for (const step of steps.filter((item) => item !== resolve)) assert.doesNotMatch(step, /^        if:/m);
+});
 
 test("WorkBuddy native cells require the validated shared package and the frozen releases", () => {
   const condition = job("workbuddy-native").match(/^    if: (.+)$/m)[1];
@@ -73,7 +96,7 @@ test("WorkBuddy consumes the shared candidate package and keeps one aggregate re
   assert.match(releases, /^      coverage: \$\{\{ steps\.releases\.outputs\.coverage \}\}$/m);
   assert.match(releases, /^        run: node scripts\/ci\/codebuddy-workbuddy\/workbuddy-release-matrix\.mjs resolve$/m);
   assert.match(releases, /^        run: node --test scripts\/ci\/codebuddy-workbuddy\/codebuddy-\*\.test\.mjs scripts\/ci\/codebuddy-workbuddy\/workbuddy-\*\.test\.mjs$/m);
-  assert.match(job("workbuddy-native"), /^    needs: \[package, workbuddy-releases\]$/m);
+  assert.match(job("workbuddy-native"), /^    needs: \[scope, package, workbuddy-releases\]$/m);
   assert.match(job("workbuddy-native"), /^      fail-fast: false$/m);
   assert.match(job("workbuddy-native"), /^      matrix: \$\{\{ fromJSON\(needs\.workbuddy-releases\.outputs\.matrix\) \}\}$/m);
   assert.match(job("workbuddy-native"), /actions\/download-artifact@v4\n        with:\n          name: \$\{\{ needs\.package\.outputs\.package-artifact-name \}\}\n          path: dist\/npm\/tarballs\n/);
@@ -88,6 +111,7 @@ test("WorkBuddy consumes the shared candidate package and keeps one aggregate re
   for (const [event, mode, expected] of [
     ["pull_request", undefined, "WorkBuddy functional result"],
     ["push", undefined, "WorkBuddy functional result (main push)"],
+    ["schedule", undefined, "WorkBuddy functional result (compatibility monitor)"],
     ["workflow_dispatch", "release-acceptance", "WorkBuddy functional result (release-acceptance)"],
     ["workflow_dispatch", "workbuddy-download-diagnostic", "WorkBuddy functional result (workbuddy-download-diagnostic)"],
   ]) {
@@ -95,7 +119,7 @@ test("WorkBuddy consumes the shared candidate package and keeps one aggregate re
       github: { event_name: event }, inputs: { mode }, format: (pattern, value) => pattern.replace("{0}", value),
     }, { timeout: 100 }), expected);
   }
-  assert.match(result, /^    needs: \[package, workbuddy-releases, workbuddy-native\]$/m);
+  assert.match(result, /^    needs: \[scope, package, workbuddy-releases, workbuddy-native\]$/m);
   assert.match(result, /PACKAGE_RESULT: \$\{\{ needs\.package\.result \}\}/);
   assert.match(result, /RELEASES_RESULT: \$\{\{ needs\.workbuddy-releases\.result \}\}/);
   assert.match(result, /WORKBUDDY_RESULT: \$\{\{ needs\.workbuddy-native\.result \}\}/);

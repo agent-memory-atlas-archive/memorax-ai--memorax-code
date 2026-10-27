@@ -48,6 +48,8 @@ jobs:
         run: node --test scripts/ci/codebuddy-workbuddy/workbuddy-workflow.test.mjs
       - name: Verify workflow triggers, check names and concurrency
         run: node --test scripts/ci/shared/workflow-scenarios.test.mjs
+      - name: Verify native client scope selection
+        run: node --test scripts/ci/shared/native-scope.test.mjs
       - name: Run the existing regression suite
         shell: bash
         run: |
