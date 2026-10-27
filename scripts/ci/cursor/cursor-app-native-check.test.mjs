@@ -8,7 +8,7 @@ import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { collectCursorAppBackendDiagnostics, collectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics, collectCursorAppSubmissionDiagnostics, createCursorAppDriverDiagnostics } from "./cursor-app-diagnostics.mjs";
 import { projectCursorAppHookTiming, collectCursorAppSessionHookDiagnostics, projectCursorAppSessionHookDiagnostics,
-  projectCursorAppHookReadinessFailure } from "./cursor-app-hook-diagnostics.mjs";
+  projectCursorAppHookReadinessFailure, projectCursorAppHookTimeline } from "./cursor-app-hook-diagnostics.mjs";
 import { collectCursorAppSkillHookContext } from "./cursor-app-hook-context.mjs";
 import { classifyCursorAppExecution, collectCursorAppNativeReport } from "./cursor-app-report.mjs";
 
@@ -22,7 +22,7 @@ function nativeFunction(name, context = {}) {
     process: { platform: "darwin" }, appLaunch: 0, readyHookSessions: new Map(), activeHookTiming: undefined, appStartedAt: 0, userData: undefined,
     bounded: promise => promise, collectCursorAppSessionHookDiagnostics, projectCursorAppHookReadinessFailure,
     safeCode: error => /^CURSOR_(?:APP|AGENT|MOCK)_[A-Z0-9_]+$/.test(error?.code) ? error.code : "CURSOR_APP_CHECK_FAILED",
-    checkpointReport() {}, beginHookTiming() {}, markHookSubmit() {}, async observeHookTiming() {}, finishHookTiming() {}, async waitForHookReady() {}, async recordSubmissionFailure() {}, ...context }, { timeout: 100 });
+    checkpointReport() {}, beginHookTiming() {}, markHookSubmit() {}, markTimeline() {}, async observeHookTiming() {}, finishHookTiming() {}, async waitForHookReady() {}, async recordSubmissionFailure() {}, ...context }, { timeout: 100 });
 }
 function childProcess() {
   return Object.assign(new EventEmitter(), { pid: 201, exitCode: null, signalCode: null,
@@ -1175,4 +1175,82 @@ test("an outer timeout during session diagnostics recovers the first failure fro
   assert.equal(output.nativeExecution.finalReport, "missing");
   assert.equal(output.stage, "hook-session-ready");
   assert.equal(JSON.stringify(output).includes(privateCanary), false);
+});
+
+test("timeline marks record launches, new sessions and the step before Enter on every platform without waiting", async () => {
+  let now = 100;
+  const checkTimeline = { launches: [], sessions: [] };
+  const mark = nativeFunction("markTimeline", { checkTimeline, Date: { now: () => now } });
+  mark("launch"); now = 120; mark("create", "first", 105); now = 130; mark("submit", "first"); mark("submit", "unknown");
+  now = 200; mark("launch"); now = 210; mark("submit", "first");
+  assert.deepEqual(JSON.parse(JSON.stringify(checkTimeline)), { launches: [100, 200], sessions: [{ id: "first", launch: 1,
+    requestedAt: 105, observedAt: 120, submits: [{ launch: 1, at: 130 }, { launch: 2, at: 210 }] }] });
+  // Windows keeps its existing waits; only the mark is added before the spawn.
+  for (const platform of ["linux", "darwin", "win32"]) {
+    const order = [], stop = new Error("spawn observed");
+    const start = nativeFunction("startApp", { process: { platform }, report: {}, macos: undefined, windows: platform === "win32" ? {} : undefined,
+      appPath: "/owned/app", root: "/owned", workspace: "/owned/workspace", agent: { url: "http://127.0.0.1:1" }, debugPort: 1, env: {},
+      markTimeline(kind) { order.push(kind); }, spawn() { order.push("spawn"); throw stop; } });
+    await assert.rejects(start(), (error) => error === stop);
+    assert.deepEqual(order, ["launch", "spawn"], platform);
+  }
+  const selected = "11111111-1111-4111-8111-111111111111", marks = [], order = [];
+  for (const resumed of [false, true]) {
+    const open = nativeFunction("openSession", { report: {}, turns: [], agent: { runs: [] }, bounded: (promise) => promise,
+      Date: { now: () => { order.push("now"); return 7; } }, markTimeline(...args) { marks.push(args); },
+      page: { async evaluate(callback, id) { order.push("evaluate"); return id ? undefined : { composerId: selected }; },
+        locator: () => ({ count: async () => 1 }) },
+      async waitFor(predicate) { assert.equal(await predicate(), true); } });
+    await open(resumed ? selected : undefined);
+  }
+  assert.deepEqual(order.slice(0, 2), ["now", "evaluate"]);
+  assert.deepEqual(marks, [["create", selected, 7]]);
+  const calls = [];
+  const submit = nativeFunction("submitPrompt", { markHookSubmit() { calls.push("mark"); },
+    markTimeline(kind, id) { calls.push(`${kind}:${id}`); }, page: {}, bounded: (promise) => promise });
+  await submit({ async fill() { calls.push("fill"); }, async press(key) { calls.push(key); } }, { prompt: "synthetic" }, { sessionId: "first" });
+  assert.deepEqual(calls, ["fill", "mark", "submit:first", "Enter"]);
+  const actions = [], finished = new Error("submission observed");
+  const input = { async fill() { actions.push("fill"); }, async press(key) { actions.push(key); throw finished; } };
+  const interrupt = nativeFunction("interruptPendingShell", { agent: { runs: [] }, report: {}, interruption: undefined,
+    workspace: "/owned/workspace", interruptedFixture: { prompt: "synthetic interruption" }, async openSession() { return "interrupted"; },
+    markTimeline(kind, id) { actions.push(`${kind}:${id}`); }, page: { locator: () => ({ locator: () => input }) } });
+  await assert.rejects(interrupt(), (error) => error === finished);
+  assert.deepEqual(actions, ["fill", "submit:interrupted", "Enter"]);
+});
+
+test("the final Hook timeline has its own time and size budget and never replaces the result", async () => {
+  const value = { collection: "completed", readStatus: "present", filesRead: 4, launches: [{ launch: 1, logFiles: 1 }] };
+  for (const outcome of ["completed", "timeout", "failed", "oversized"]) {
+    const report = { status: "FAIL", errorCode: "CURSOR_APP_SESSION", stage: "session-open", evidence: { cleanup: true },
+      ...(outcome === "oversized" ? { padding: "x".repeat(60 * 1024) } : {}) };
+    const before = JSON.stringify(report), calls = [], waits = [];
+    const record = nativeFunction("recordHookTimeline", { report, userData: "/owned/app-data", agent: { runs: ["run"] },
+      checkTimeline: { launches: [1], sessions: [{ id: "first" }] }, projectCursorAppHookTimeline,
+      collectCursorAppHookTimeline(input) {
+        calls.push(input);
+        return outcome === "timeout" ? new Promise(() => {}) : outcome === "failed" ? Promise.reject(new Error(privateCanary)) : Promise.resolve(value);
+      },
+      async bounded(promise, code, timeoutMs, onTimeout) {
+        calls.push([code, timeoutMs]);
+        if (outcome !== "timeout") return promise;
+        onTimeout();
+        throw Object.assign(new Error(code), { code });
+      },
+      async delay(milliseconds) { waits.push(milliseconds); } });
+    await record();
+    const { hookTimeline, ...rest } = report;
+    assert.equal(JSON.stringify(rest), before, outcome);
+    assert.equal(hookTimeline.collection, outcome);
+    assert.equal(hookTimeline.readStatus, ["completed", "oversized"].includes(outcome) ? "present" : "unavailable");
+    assert.equal(hookTimeline.launches.length, outcome === "completed" ? 1 : 0);
+    assert.deepEqual(JSON.parse(JSON.stringify(calls)), [{ home: "/owned/app-data", launches: [1], sessions: [{ id: "first" }], runs: ["run"] },
+      ["CURSOR_APP_HOOK_TIMELINE_TIMEOUT", 2000]]);
+    // A timed-out read gets a bounded chance to close its log before state cleanup.
+    assert.deepEqual(waits, outcome === "timeout" ? [5000] : []);
+    assert.equal(JSON.stringify(report).includes(privateCanary), false);
+  }
+  const final = source.slice(source.indexOf("\n}\nfinally {"));
+  assert.ok(final.indexOf('report.status = "PASS"') < final.indexOf("await recordHookTimeline()")
+    && final.indexOf("await recordHookTimeline()") < final.indexOf("await rm(root"));
 });

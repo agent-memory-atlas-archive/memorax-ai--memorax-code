@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { classifyCursorAppExecution, collectCursorAppNativeReport, writeCursorAppFinalReport, writeCursorAppProgress } from "./cursor-app-report.mjs";
+import { projectCursorAppHookTimeline } from "./cursor-app-hook-diagnostics.mjs";
 
 const expected = { expectedVersion: "3.21.18", nodeMajor: "24", platform: "linux" };
 const privateCanary = "private-path-token-transcript-canary";
@@ -171,4 +172,47 @@ test("final and progress reports preserve frozen first-session evidence without 
     assert.equal(output.hookReadinessFailure.sessionStart.filteredExecutionBlocks.parse, 1);
     assert.equal(JSON.stringify(output).includes(privateCanary), false);
   }
+});
+
+test("the Hook timeline is kept for final PASS, final FAIL and recovered progress on every platform without deciding the result", async () => {
+  const passing = (platform) => ({ status: "PASS", client: "cursor", kind: "app-native-session-flows", platform, node: "24.22.0",
+    version: "3.21.18", stage: "complete", evidence: { agentTransport: true, nativeHooks: true, exactAutomaticAdd: true,
+      sameSessionFollowup: true, sessionIsolation: true, workspaceIsolation: true, appResume: true, skillSearch: true, skillAdd: true,
+      shellDenied: true, pendingShellInterrupted: true, sameSessionRecovered: true, repoMemoryWorker: true, cleanup: true,
+      nativeContent: [3, 6, 3, 9, 15, 21, 4, 3, 4].map((blobCount) => ({ composerMatched: true, stateMatched: true, blobCount })) },
+    agent: { runs: 11, ancillaryRequestCount: 0, unsupportedRpcCount: 0, errors: [], cancelled: Array.from({ length: 11 }, (_, index) => index === 7),
+      writes: [3, 3, 3, 3, 6, 6, 4, 0, 3, 4, 5], acknowledgements: [3, 3, 3, 3, 6, 6, 4, 0, 3, 4, 5], historyTurns: [0, 1, 0, 2, 3, 4, 0, 0, 0, 0, 0],
+      reads: [0, 3, 0, 6, 9, 15, 0, 0, 0, 0, 0], readResults: [0, 3, 0, 6, 9, 15, 0, 0, 0, 0, 0],
+      execRequests: [0, 0, 0, 0, 3, 3, 1, 1, 0, 1, 2], execResults: [0, 0, 0, 0, 3, 3, 1, 0, 0, 1, 2], execCloses: [0, 0, 0, 0, 3, 3, 1, 0, 0, 1, 2],
+      contextRequests: Array(11).fill(1), contextResults: Array(11).fill(1), contextCloses: Array(11).fill(1) }, memoryRequestCount: 11 });
+  const timeline = { collection: "completed", readStatus: "present", filesRead: 4, raw: privateCanary,
+    launches: [{ launch: 1, logFiles: 1, serviceInitMs: 900, config: [{ ms: 950, state: "loaded", text: privateCanary }],
+      requestsMs: { sessionStart: [1200], beforeSubmitPrompt: [1300] }, omittedEvents: 0 }],
+    sessions: [{ role: "S1", launch: 1, createMs: { requested: 1100, observed: 1250 }, configAtCreate: "not-ready", id: privateCanary,
+      submitsMs: [{ launch: 1, ms: 1300 }], context: { runs: 1, ownRuns: 0, none: ["initial"], foreignRoles: [privateCanary] } }],
+    sessionStart: { requests: 1, ownedExecutionBlocks: 1, executions: [{ role: "S2", launch: 2, exitCode: 0, responseKind: "json",
+      trace: "foreign", traceRole: "S1", stdout: privateCanary }] } };
+  for (const platform of ["linux", "darwin", "win32"]) for (const source of ["pass", "fail", "progress"]) {
+    const input = { ...(source === "pass" ? passing(platform) : { ...fixture(), platform }), hookTimeline: timeline };
+    const report = await collectCursorAppNativeReport({ expected: { ...expected, platform },
+      fallback: { status: "FAIL", evidence: {} }, execution: classifyCursorAppExecution(source === "progress" ? { code: 1 } : undefined),
+      exitErrorCode: "CURSOR_APP_NATIVE_EXIT", async readReport(name) {
+        if (source === "progress" && name === "report.json") throw missing();
+        return JSON.stringify(input, null, 2);
+      } });
+    assert.equal(report.status, source === "pass" ? "PASS" : "FAIL", `${platform} ${source}`);
+    assert.equal(report.nativeExecution.reportSource, source === "progress" ? "progress" : "final");
+    assert.deepEqual(report.hookTimeline, projectCursorAppHookTimeline(timeline));
+    assert.equal(report.hookTimeline.sessions[0].configAtCreate, "not-ready");
+    assert.equal(report.hookTimeline.sessionStart.executions[0].traceRole, "S1");
+    assert.equal(JSON.stringify(report).includes(privateCanary), false);
+  }
+  // A malformed timeline projects to its empty failed form and never fails a passing report.
+  const garbage = await collectCursorAppNativeReport({ expected: { ...expected, platform: "win32" }, fallback: { status: "FAIL", evidence: {} },
+    execution: classifyCursorAppExecution(), exitErrorCode: "CURSOR_APP_NATIVE_EXIT",
+    readReport: async () => JSON.stringify({ ...passing("win32"), hookTimeline: privateCanary }) });
+  assert.equal(garbage.status, "PASS");
+  assert.equal(garbage.hookTimeline.collection, "failed");
+  assert.deepEqual(garbage.hookTimeline.sessions, []);
+  assert.equal(JSON.stringify(garbage).includes(privateCanary), false);
 });

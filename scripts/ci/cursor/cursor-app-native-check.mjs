@@ -19,7 +19,8 @@ import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, createC
   collectCursorAppShellDiagnostics, collectCursorAppShellOutputDiagnostics,
   projectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 import { collectCursorAppHookDiagnostics, collectCursorAppHookTiming, projectCursorAppHookTiming,
-  collectCursorAppSessionHookDiagnostics, projectCursorAppHookReadinessFailure } from "./cursor-app-hook-diagnostics.mjs";
+  collectCursorAppSessionHookDiagnostics, projectCursorAppHookReadinessFailure,
+  collectCursorAppHookTimeline, projectCursorAppHookTimeline } from "./cursor-app-hook-diagnostics.mjs";
 import { collectCursorAppSkillHookContext } from "./cursor-app-hook-context.mjs";
 
 const [packageRoot, appPath, expectedVersion, playwrightRoot, reportDir, expectedNodeMajor = "24"] = process.argv.slice(2);
@@ -59,6 +60,7 @@ let interruption, denial, repoMemory, repoMemoryHelper, repoMemoryDefinition;
 let macos, macosPaths, windows, windowsPaths, backendPort = 18787, debugPort = 9222;
 let appStartedAt, appLaunch = 0, activeHookTiming;
 const readyHookSessions = new Map();
+const checkTimeline = { launches: [], sessions: [] };
 const observedMacosProcesses = new Map();
 const referenceTexts = new Map();
 const exec = promisify(execFile);
@@ -251,6 +253,29 @@ async function waitForHookReady(phase, sessionId) {
     }
     throw error;
   } finally { frozen = true; finishHookTiming(); }
+}
+function markTimeline(kind, sessionId, requestedAt) {
+  // Check-side times for hookTimeline on every platform; marking never waits or changes the flow.
+  const now = Date.now(), launch = checkTimeline.launches.length;
+  if (kind === "launch") checkTimeline.launches.push(now);
+  if (kind === "create") checkTimeline.sessions.push({ id: sessionId, launch, requestedAt, observedAt: now, submits: [] });
+  if (kind === "submit") checkTimeline.sessions.find((session) => session.id === sessionId)?.submits.push({ launch, at: now });
+}
+async function recordHookTimeline() {
+  let collection = "completed", value;
+  const pending = collectCursorAppHookTimeline({ home: userData, ...checkTimeline, runs: agent?.runs });
+  try {
+    value = await bounded(pending, "CURSOR_APP_HOOK_TIMELINE_TIMEOUT", 2000, () => { collection = "timeout"; });
+  } catch {
+    if (collection !== "timeout") collection = "failed";
+    // A log still open after the budget could block state cleanup on Windows.
+    else await Promise.race([pending.catch(() => {}), delay(5000)]);
+  }
+  const timeline = report.hookTimeline = projectCursorAppHookTimeline({ ...value, collection });
+  // Keep the final report well inside its 64 KiB limit; only the scope survives an oversized timeline.
+  if (Buffer.byteLength(JSON.stringify(report, null, 2)) > 60 * 1024) {
+    report.hookTimeline = projectCursorAppHookTimeline({ collection: "oversized", readStatus: timeline.readStatus, filesRead: timeline.filesRead });
+  }
 }
 async function assertMarkerAbsent(marker, code) {
   try { await lstat(marker); check(false, code); }
@@ -445,6 +470,7 @@ async function assertProcessesStopped(options = {}) {
 }
 async function startApp() {
   if (["linux", "darwin"].includes(process.platform)) { appStartedAt = Date.now(); appLaunch += 1; readyHookSessions.clear(); }
+  markTimeline("launch");
   appLaunchLog = ""; appSpawnError = undefined; appDebugEndpointSeen = false;
   const driver = createCursorAppDriverDiagnostics({ onUpdate(value) { report.appDriver = value; } });
   let driverReady = false;
@@ -499,6 +525,7 @@ async function startApp() {
 async function openSession(sessionId) {
   report.stage = "session-open";
   checkpointReport();
+  const requestedAt = Date.now();
   await bounded(page.evaluate((id) => id
     ? window.driver.executeCommand("composer.openComposer", id, { openInNewTab: false })
     : window.driver.executeCommand("workbench.action.chat.open"), sessionId), "CURSOR_APP_CHAT_OPEN_TIMEOUT");
@@ -513,6 +540,7 @@ async function openSession(sessionId) {
     return typeof selected === "string" && selected.length > 0
       && (sessionId ? selected === sessionId : !turns.some((turn) => turn.sessionId === selected));
   }, "CURSOR_APP_SESSION");
+  if (!sessionId) markTimeline("create", selected, requestedAt);
   const composer = page.locator(`[data-composer-id="${selected}"][data-composer-status]:visible`);
   const hasHistory = agent.runs.some((run) => run.conversationId === selected && run.completed);
   await waitFor(async () => await composer.count() === 1
@@ -572,6 +600,7 @@ async function submitPrompt(input, fixture, context = {}) {
     }
     phase = "enter";
     markHookSubmit();
+    markTimeline("submit", context.sessionId);
     await input.press("Enter");
   } catch (error) {
     try { await recordSubmissionFailure({ ...context, input, phase, error }); } catch {}
@@ -710,7 +739,7 @@ async function interruptPendingShell() {
   checkpointReport();
   const composer = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`);
   const input = composer.locator('.aislash-editor-input[contenteditable="true"][role="textbox"]:visible');
-  await input.fill(interruptedFixture.prompt); await input.press("Enter");
+  await input.fill(interruptedFixture.prompt); markTimeline("submit", sessionId); await input.press("Enter");
   let run, stop;
   await waitFor(async () => {
     check(!agent.errors.length, agent.errors[0]);
@@ -1117,6 +1146,8 @@ finally {
   if (!report.cleanupError) report.evidence.cleanup = true;
   report.memoryRequestCount = memoryRequests.length;
   if (!report.errorCode && !report.cleanupError) { report.status = "PASS"; report.stage = "complete"; }
+  // Collected for PASS and FAIL alike, before state cleanup; it never sets status, codes or stage.
+  if (userData) await recordHookTimeline().catch(() => {});
   if ((macos || windows) && root && !report.cleanupError) {
     await rm(root, { recursive: true, force: true }).catch(() => {
       report.status = "FAIL"; report.cleanupError = "CURSOR_APP_STATE_CLEANUP"; report.evidence.cleanup = false;
