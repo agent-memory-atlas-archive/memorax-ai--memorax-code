@@ -167,7 +167,8 @@ async function waitForDriverReady(predicate, timeoutMs, driver) {
   check(false, "CURSOR_APP_DRIVER");
 }
 function beginHookTiming(phase, sessionId, { runIndex = null, resumedSession = false } = {}) {
-  if (!["linux", "darwin"].includes(process.platform)) return;
+  // Windows observes only its readiness waits; its turns keep the unobserved path.
+  if (phase === "turn" && !["linux", "darwin"].includes(process.platform)) return;
   activeHookTiming = { phase, appLaunch, sessionId, runIndex, resumedSession,
     observedMs: { sessionStartReady: readyHookSessions.get(sessionId) ?? null } };
 }
@@ -207,7 +208,6 @@ function finishHookTiming() {
   activeHookTiming = undefined;
 }
 async function waitForHookReady(phase, sessionId) {
-  if (!["linux", "darwin"].includes(process.platform)) return;
   beginHookTiming(phase, sessionId);
   report.stage = phase === "config" ? "hook-config-ready" : "hook-session-ready";
   checkpointReport();
@@ -469,7 +469,7 @@ async function assertProcessesStopped(options = {}) {
   check(false, "CURSOR_APP_CLEANUP_DESCENDANTS");
 }
 async function startApp() {
-  if (["linux", "darwin"].includes(process.platform)) { appStartedAt = Date.now(); appLaunch += 1; readyHookSessions.clear(); }
+  appStartedAt = Date.now(); appLaunch += 1; readyHookSessions.clear();
   markTimeline("launch");
   appLaunchLog = ""; appSpawnError = undefined; appDebugEndpointSeen = false;
   const driver = createCursorAppDriverDiagnostics({ onUpdate(value) { report.appDriver = value; } });
