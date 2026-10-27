@@ -391,6 +391,26 @@ test("native Bash stdout rejects empty and ambiguous nested result envelopes", (
   }
 });
 
+test("invalid native Bash stdout carries one fixed reason in every native format without exposing stdout", () => {
+  const canary = "PRIVATE_STDOUT_CANARY";
+  for (const [client, commandEcho] of [["workbuddy", true], ["codebuddy", true], ["codebuddy", false]]) {
+    const select = (stdout) => {
+      const { command, options } = commandlessBashFixture();
+      const output = bashEnvelope(command, stdout).slice(commandEcho ? 0 : `Command: ${command}\n`.length);
+      options.body.messages[1].content = output;
+      return selectNativeBashStdout(output, command, { ...options, client });
+    };
+    for (const [stdout, reason] of [["", "zero_length"], ["(empty)", "literal_empty"],
+      [`${canary}\nStderr: hidden failure\nExit Code: 1\nSignal: (none)`, "envelope_fields"],
+      [`Command: ${canary}\nStdout: pretend success`, "envelope_fields"]]) {
+      assert.throws(() => select(stdout), (error) => error.nativeCode === "NATIVE_BASH_STDOUT_INVALID"
+        && error.message === error.nativeCode && error.stdoutInvalidReason === reason
+        && !`${error.stack}${JSON.stringify(error)}`.includes(canary));
+    }
+    for (const stdout of [" ", "(empty)\n", "note Stdout: inline", "first\n\nlast\n"]) assert.equal(select(stdout), stdout);
+  }
+});
+
 test("native Bash validation reports only fixed codes for private output or malformed input", () => {
   const command = "'PRIVATE_COMMAND_CANARY'";
   for (const [output, expectedCommand] of [[null, command], [{ private: "PRIVATE_OUTPUT_CANARY" }, command],
