@@ -177,8 +177,11 @@ export function selectNativeBashStdout(output, command, { client, body, call } =
   const suffix = "\nStderr: (empty)\nExit Code: 0\nSignal: (none)";
   check(output.startsWith(prefix) && output.endsWith(suffix), "NATIVE_BASH_RESULT_MISMATCH");
   const stdout = output.slice(prefix.length, -suffix.length);
-  check(stdout.length > 0 && stdout !== "(empty)" && !/(?:^|\n)(?:Command|Stdout|Stderr|Exit Code|Signal): /.test(stdout),
-    "NATIVE_BASH_STDOUT_INVALID");
+  // A fixed reason tells the invalid forms apart; stdout itself never leaves this function.
+  const invalidReason = stdout.length === 0 ? "zero_length" : stdout === "(empty)" ? "literal_empty"
+    : /(?:^|\n)(?:Command|Stdout|Stderr|Exit Code|Signal): /.test(stdout) ? "envelope_fields" : undefined;
+  if (invalidReason) throw Object.assign(new Error("NATIVE_BASH_STDOUT_INVALID"),
+    { nativeCode: "NATIVE_BASH_STDOUT_INVALID", stdoutInvalidReason: invalidReason });
   return stdout;
 }
 

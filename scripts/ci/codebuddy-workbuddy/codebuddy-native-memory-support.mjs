@@ -88,7 +88,7 @@ export async function runNativeMemoryCheck({ client, args }) {
         (body) => ({ toolCalls: [sessionTool = toolCall(body, "Bash", { command: sessionCommand,
           description: "Inspect the isolated native session", timeout: 15000 }, "native-session-marker")] }),
         async (body) => {
-          const output = selectNativeBashStdout(toolResult(body, "native-session-marker"), sessionCommand, { client, body, call: sessionTool });
+          const output = selectReportedBashStdout(report, toolResult(body, "native-session-marker"), sessionCommand, { client, body, call: sessionTool });
           check(output.includes(toolCanary), "NATIVE_TOOL_MARKER_MISSING");
           const match = output.match(/NATIVE_SESSION=(\{[^\r\n]+\})/);
           check(match, "NATIVE_SESSION_ENV_MISSING");
@@ -160,7 +160,7 @@ export async function runNativeMemoryCheck({ client, args }) {
             let output;
             try {
               output = toolResult(body, `memory-${operation}`);
-              const result = JSON.parse(selectNativeBashStdout(output, command, { client, body, call: memoryTool }).trim());
+              const result = JSON.parse(selectReportedBashStdout(report, output, command, { client, body, call: memoryTool }).trim());
               if (operation === "search") assertSearchResult(result, { query, memory: searchResult });
               else check(result.ok === true && result.action === "memory.add" && result.receipt?.accepted === true,
                 "NATIVE_SKILL_ADD_RESULT_MISMATCH");
@@ -418,6 +418,15 @@ export function assertNativeHookCorrelation(events, { client, sessionId, prompt 
     && event.trace.session_id === sessionId && event.trace.turn_id === starts[0].trace.turn_id && event.outcome === "completed"),
   "NATIVE_HOOK_COMPLETION_CORRELATION_MISSING");
   return starts[0];
+}
+
+// The receiver keeps only error codes, so record the fixed reason here; stdout stays local.
+export function selectReportedBashStdout(report, output, command, options) {
+  try { return selectNativeBashStdout(output, command, options); }
+  catch (error) {
+    if (error.stdoutInvalidReason) report.bashStdoutInvalidReason ??= error.stdoutInvalidReason;
+    throw error;
+  }
 }
 
 // Diagnostic hints only; acceptance still requires the exact successful Bash envelope.

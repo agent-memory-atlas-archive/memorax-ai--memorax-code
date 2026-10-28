@@ -1832,15 +1832,18 @@ agree. Failures retain the first rejected parent request for Hook and Backend
 diagnostics, plus a fixed rejection reason and bounded per-source presence and
 marker counts. Delegation prompts, invocations and capabilities stay private.
 
-Linux and macOS wait for native user Hook configuration to load for the current App
-launch before opening a new session, then require a successful marker-owned
+Every platform waits for native user Hook configuration to load for the current
+App launch before opening a new session, then requires a successful marker-owned
 `sessionStart` for that session before its first submission. These bounded
 checks diagnose missing startup prerequisites; they do not make Cursor
-configuration reload and prompt submission atomic. Reports retain bounded
-relative Hook timing, including the first Repo Memory submission attempt, and
-Windows process-audit summaries on success and failure, so passing cells can
-serve as controls. Native requests and Backend registration
-remain independently observed; the fixture never supplies a missing Turn start.
+configuration reload and prompt submission atomic, and a check that waits does
+not exercise a session created before configuration finishes loading. Linux and
+macOS reports retain bounded relative Hook timing, including the first Repo
+Memory submission attempt, and Windows reports retain process-audit summaries,
+on success and failure, so passing cells can serve as controls. Windows polls
+the Hooks logs only during the two waits, not during turns. Native requests and
+Backend registration remain independently observed; the fixture never supplies
+a missing Turn start.
 
 On failure, `hookReadinessFailure` distinguishes a single log-read timeout from
 the overall Hook readiness window and preserves the last completed observation.
@@ -1848,6 +1851,24 @@ Before cleanup, a bounded read records SessionStart requests, owned executions,
 filter counts and fixed response fields for the explicit session, including
 failures before any model request. Session IDs and raw Hook content are excluded;
 failed or late diagnostic reads do not replace the first native failure.
+
+Every platform also records `hookTimeline` on success and failure, so a failing
+cell can be compared with its baseline. Before state cleanup, one bounded read of
+the Hooks logs keeps, relative to each launch, configuration states,
+`sessionStart` and `beforeSubmitPrompt` requests, session creation and submission
+times, and whether configuration was loaded when each session was created. That
+answer is `unknown` unless every log was read and the launch's only log is
+readable through the session's observation. Recording it adds no wait.
+SessionStart keeps the existing request, owned-block and filter counts; each
+execution adds fixed response fields, the times of the nearest log lines around
+its block, the submission requests logged before it, and whether its output
+names the session's own trace, another session's, a form the strict matcher does
+not recognize, or none. Those line times and counts give log order only, not
+when the Hook ran or finished. Request contexts are classified per source the
+same way. Sessions appear only as check roles (`S1`–`S6`, their subagents or
+`other`). The read has a 2-second budget and the report a 60 KiB ceiling; a
+late, failed or oversized timeline keeps only its collection status and never
+changes the result.
 
 Real login, hosted models, OS credential-store isolation, native Continue/Retry/
 Edit, Backend restart, preauthorized tools, running-tool interruption,
