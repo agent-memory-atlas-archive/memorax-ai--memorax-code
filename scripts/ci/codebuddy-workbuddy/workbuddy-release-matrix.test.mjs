@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import { baselineRelease, buildMatrix, coverageSummary, resolveFeed, resolveLatest, validateRelease } from "./workbuddy-release-matrix.mjs";
+import { fileURLToPath } from "node:url";
+import { readAcceptance } from "../shared/client-acceptance.mjs";
+import { acceptedMatrix, baselineRelease, buildMatrix, coverageSummary, resolveFeed, resolveLatest, validateRelease }
+  from "./workbuddy-release-matrix.mjs";
 
 const platforms = ["linux-x64-deb", "darwin-arm64", "win32-x64-user"];
 const linuxFeedHash = "03d756b259d7086c22098fa077589a032d60948d1de7313473360eefe11e240f";
@@ -92,6 +99,93 @@ test("WorkBuddy release validation rejects malformed, cross-platform and untrust
   for (const change of [{ version: "5.7.0.40000000-beta" }, { productVersion: "5.6.2" }, { sha256hash: "" }]) {
     assert.throws(() => resolveFeed("darwin-arm64", { ...feed("darwin-arm64", true), ...change }));
   }
+});
+
+// A manifest section that records the baseline pinned in code for every platform and, unless given, the same accepted release.
+function pinnedSection(accepted = {}) {
+  const entry = (release) => ({ desktop: { version: release.desktopVersion, url: release.url, sha256: release.sha256 },
+    runtime: { version: release.runtimeVersion } });
+  const channel = (pick) => ({ platforms: Object.fromEntries(platforms.map((platform) => [platform, pick(platform)])) });
+  return { baseline: channel((platform) => entry(baselineRelease(platform))),
+    accepted: channel((platform) => accepted[platform] ?? entry(baselineRelease(platform))) };
+}
+function acceptedEntry(platform) {
+  const value = feed(platform, true);
+  return { desktop: { version: value.version, url: value.url, sha256: value.sha256hash }, runtime: { version: "2.160.1" } };
+}
+
+test("WorkBuddy pull requests run each platform's recorded baseline and accepted release and retain the Linux minimum Node baseline", () => {
+  // The recorded manifest passes the release validators, and its baselines are the ones pinned in code.
+  const section = readAcceptance("workbuddy");
+  for (const { release } of acceptedMatrix(section).include) assert.deepEqual(validateRelease(release, release.platform), release);
+  for (const platform of platforms) {
+    const rows = acceptedMatrix(section).include.filter((row) => row.node === "24" && row.release.platform === platform);
+    assert.deepEqual(rows[0].release, { ...baselineRelease(platform), channel: rows.length === 1 ? "baseline+accepted" : "baseline" });
+    assert.ok(rows.length === 1 || rows[1].release.channel === "accepted");
+    const { desktop, runtime } = section.accepted.platforms[platform], { release } = rows.at(-1);
+    assert.deepEqual([release.desktopVersion, release.url, release.sha256, release.runtimeVersion],
+      [desktop.version, desktop.url, desktop.sha256, runtime.version]);
+  }
+  for (const updated of [[], ["linux-x64-deb"], ["darwin-arm64", "win32-x64-user"], platforms]) {
+    const { include } = acceptedMatrix(pinnedSection(Object.fromEntries(updated.map((platform) => [platform, acceptedEntry(platform)]))));
+    assert.equal(include.length, 4 + updated.length);
+    const minimum = include.filter((row) => row.node === "20");
+    assert.equal(minimum.length, 1);
+    assert.equal(minimum[0].os, "ubuntu-24.04");
+    assert.deepEqual(minimum[0].release, baselineRelease("linux-x64-deb"));
+    for (const platform of platforms) {
+      const rows = include.filter((row) => row.node === "24" && row.release.platform === platform);
+      assert.deepEqual(rows.map((row) => row.release.channel), updated.includes(platform) ? ["baseline", "accepted"] : ["baseline+accepted"]);
+    }
+  }
+});
+
+test("WorkBuddy pinned releases fail on a missing or invalid entry, a missing runtime or a moved baseline", () => {
+  for (const section of [undefined, { ...pinnedSection(), accepted: { platforms: {} } }, { accepted: pinnedSection().accepted }]) {
+    assert.throws(() => acceptedMatrix(section), /WORKBUDDY_ACCEPTED_RELEASE_MISSING/);
+  }
+  const entry = acceptedEntry("darwin-arm64");
+  for (const change of [{ runtime: undefined }, { runtime: { version: "latest" } }, { desktop: undefined },
+    { desktop: { ...entry.desktop, url: entry.desktop.url.replace("download.codebuddy.cn", "example.com") } },
+    { desktop: { ...entry.desktop, sha256: "" } }, { desktop: { ...entry.desktop, version: "5.7.0" } }]) {
+    assert.throws(() => acceptedMatrix(pinnedSection({ "darwin-arm64": { ...entry, ...change } })), JSON.stringify(change));
+  }
+  // A routine refresh changes only the accepted releases; the baselines move with the code.
+  const moved = pinnedSection();
+  moved.baseline.platforms["darwin-arm64"] = entry;
+  assert.throws(() => acceptedMatrix(moved));
+  // An accepted release pins its bundled runtime; a release that equals the baseline still validates as the baseline.
+  const accepted = { ...resolveFeed("darwin-arm64", feed("darwin-arm64", true)), channel: "accepted", runtimeVersion: "2.160.1" };
+  assert.deepEqual(validateRelease(accepted, "darwin-arm64"), accepted);
+  for (const runtimeVersion of [null, "", "2.160", "2.160.1\n"]) {
+    assert.throws(() => validateRelease({ ...accepted, runtimeVersion }, "darwin-arm64"));
+  }
+  for (const channel of ["latest", "baseline+accepted"]) assert.throws(() => validateRelease({ ...accepted, channel }, "darwin-arm64"));
+  const same = { ...baselineRelease("darwin-arm64"), channel: "baseline+accepted" };
+  assert.deepEqual(validateRelease(same, "darwin-arm64"), same);
+});
+
+test("the accepted command writes the pinned WorkBuddy matrix and its coverage without asking the official feeds", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "workbuddy-accepted-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const script = fileURLToPath(new URL("./workbuddy-release-matrix.mjs", import.meta.url));
+  const env = { ...process.env, GITHUB_OUTPUT: join(root, "output"), GITHUB_STEP_SUMMARY: join(root, "summary") };
+  const result = spawnSync(process.execPath, [script, "accepted"], { encoding: "utf8", env, timeout: 10_000 });
+  assert.equal(result.status, 0, result.stderr);
+  const matrix = acceptedMatrix(readAcceptance("workbuddy"));
+  const coverage = "Pinned acceptance inputs from the client acceptance manifest; no official latest lookup.";
+  assert.deepEqual(JSON.parse(result.stdout), matrix);
+  assert.equal(await readFile(env.GITHUB_OUTPUT, "utf8"), `matrix=${JSON.stringify(matrix)}\ncoverage=${coverage}\n`);
+  const summary = await readFile(env.GITHUB_STEP_SUMMARY, "utf8");
+  assert.ok(summary.includes(coverage));
+  // Only the Linux baseline keeps an advisory reference hash; an accepted Linux release must match the hash it recorded.
+  const rows = summary.split("\n").filter((line) => line.startsWith("- "));
+  assert.deepEqual(rows.map((line) => line.includes("(advisory reference)")),
+    matrix.include.map((row) => row.release.platform === "linux-x64-deb" && row.release.channel !== "accepted"));
+  const extra = spawnSync(process.execPath, [script, "accepted", "extra"], { encoding: "utf8", env, timeout: 10_000 });
+  assert.equal(extra.status, 1);
+  assert.match(extra.stderr, /^WORKBUDDY_RELEASE_RESOLUTION_FAILED: /);
+  assert.equal(await readFile(env.GITHUB_OUTPUT, "utf8"), `matrix=${JSON.stringify(matrix)}\ncoverage=${coverage}\n`);
 });
 
 test("WorkBuddy known artifact checksums remain strict outside Linux", () => {

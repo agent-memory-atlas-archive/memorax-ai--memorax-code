@@ -1,28 +1,38 @@
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
-import { readFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, win32 } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
-import { runInNewContext } from "node:vm";
+import { createContext, isContext, runInNewContext } from "node:vm";
 import { collectCursorAppBackendDiagnostics, collectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics, collectCursorAppSubmissionDiagnostics, createCursorAppDriverDiagnostics } from "./cursor-app-diagnostics.mjs";
-import { projectCursorAppHookTiming, collectCursorAppSessionHookDiagnostics, projectCursorAppSessionHookDiagnostics,
-  projectCursorAppHookReadinessFailure } from "./cursor-app-hook-diagnostics.mjs";
+import { collectCursorAppHookTiming, projectCursorAppHookTiming, collectCursorAppSessionHookDiagnostics, projectCursorAppSessionHookDiagnostics,
+  projectCursorAppHookReadinessFailure, projectCursorAppHookTimeline } from "./cursor-app-hook-diagnostics.mjs";
 import { collectCursorAppSkillHookContext } from "./cursor-app-hook-context.mjs";
 import { classifyCursorAppExecution, collectCursorAppNativeReport } from "./cursor-app-report.mjs";
 
 const source = (await readFile(new URL("./cursor-app-native-check.mjs", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
 const privateCanary = "private-content-path-token-canary";
 function check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); }
-function nativeFunction(name, context = {}) {
-  const definition = source.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?(?=\\n(?:async )?function )`))?.[0];
-  assert.ok(definition, name);
-  return runInNewContext(`(${definition})`, { check, Buffer, basename, dirname, join, once, createCursorAppDriverDiagnostics, collectCursorAppSkillHookContext, projectCursorAppHookTiming, collectCursorAppSubmissionDiagnostics,
+function nativeContext(context) {
+  return { check, Buffer, basename, dirname, join, once, createCursorAppDriverDiagnostics, collectCursorAppSkillHookContext, projectCursorAppHookTiming, collectCursorAppSubmissionDiagnostics,
     process: { platform: "darwin" }, appLaunch: 0, readyHookSessions: new Map(), activeHookTiming: undefined, appStartedAt: 0, userData: undefined,
     bounded: promise => promise, collectCursorAppSessionHookDiagnostics, projectCursorAppHookReadinessFailure,
     safeCode: error => /^CURSOR_(?:APP|AGENT|MOCK)_[A-Z0-9_]+$/.test(error?.code) ? error.code : "CURSOR_APP_CHECK_FAILED",
-    checkpointReport() {}, beginHookTiming() {}, markHookSubmit() {}, async observeHookTiming() {}, finishHookTiming() {}, async waitForHookReady() {}, async recordSubmissionFailure() {}, ...context }, { timeout: 100 });
+    checkpointReport() {}, beginHookTiming() {}, markHookSubmit() {}, markTimeline() {}, async observeHookTiming() {}, finishHookTiming() {}, async waitForHookReady() {}, async recordSubmissionFailure() {}, ...context };
+}
+function nativeFunction(name, context = {}) {
+  const definition = source.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?(?=\\n(?:async )?function )`))?.[0];
+  assert.ok(definition, name);
+  return runInNewContext(`(${definition})`, isContext(context) ? context : nativeContext(context), { timeout: 100 });
+}
+// Defines native functions in one context, so they share launch, readiness and timing state as the check does.
+function nativeScope(names, context) {
+  const scope = createContext(nativeContext(context));
+  for (const name of names) scope[name] = nativeFunction(name, scope);
+  return scope;
 }
 function childProcess() {
   return Object.assign(new EventEmitter(), { pid: 201, exitCode: null, signalCode: null,
@@ -162,7 +172,7 @@ test("App launch preserves the sandbox and isolated arguments with a longer Wind
     });
     await start();
     assert.deepEqual(readiness, ["config"]);
-    assert.equal(readyHookSessions.size, platform === "win32" ? 1 : 0);
+    assert.equal(readyHookSessions.size, 0);
     assert.equal(argumentsSeen.includes("--force-disable-user-env"), platform !== "linux");
     assert.ok(argumentsSeen.includes("--use-inmemory-secretstorage"));
     assert.ok(argumentsSeen.includes("--test-backend-url=http://127.0.0.1:12345"));
@@ -514,8 +524,8 @@ test("preflight rejects unsupported runtimes, Linux root and unowned Windows run
   }
 });
 
-test("Linux and macOS readiness use bounded independent gates and preserve failure before submission", async () => {
-  for (const platform of ["linux", "darwin"]) for (const phase of ["config", "session"]) for (const ready of [false, true]) {
+test("readiness uses bounded independent gates on every platform and preserves failure before submission", async () => {
+  for (const platform of ["linux", "darwin", "win32"]) for (const phase of ["config", "session"]) for (const ready of [false, true]) {
     const calls = [], report = {};
     const gate = nativeFunction("waitForHookReady", { process: { platform }, report,
       beginHookTiming(value, id) { calls.push([value, id]); },
@@ -530,9 +540,6 @@ test("Linux and macOS readiness use bounded independent gates and preserve failu
     assert.equal(calls.at(-1), "snapshot");
     assert.deepEqual(calls[0], [phase, "session"]);
   }
-  for (const platform of ["win32"]) {
-    await nativeFunction("waitForHookReady", { process: { platform }, beginHookTiming() { assert.fail("unsupported readiness gate"); } })("config");
-  }
 });
 
 test("new sessions wait for their Hook but resumed sessions do not require a new sessionStart", async () => {
@@ -546,6 +553,129 @@ test("new sessions wait for their Hook but resumed sessions do not require a new
     });
     assert.equal(await open(resumed ? selected : undefined), selected);
     assert.deepEqual(calls, resumed ? [] : [["session", selected]]);
+  }
+});
+
+// Hooks log lines as Windows writes them (CRLF, the owned Hook behind an encoded PowerShell command), at virtual times.
+const hookBase = Date.parse("2026-10-27T09:00:00.000Z"), hookRule = "\u2550".repeat(87);
+const hookSession = "11111111-1111-4111-8111-111111111111", hookForeign = "22222222-2222-4222-8222-222222222222";
+const hookLine = (at, text) => "[" + new Date(hookBase + at).toISOString() + "] " + text + "\n";
+const hookInitialized = at => hookLine(at, "Initializing Cursor Hooks Service...");
+const hookLoaded = at => hookLine(at, "Loaded 5 user hook(s) for steps: sessionStart, beforeSubmitPrompt, preCompact, afterAgentResponse, stop");
+function hookSessionStart(at, id) {
+  const command = Buffer.from("node D:\\owned\\runtime-hook.mjs --memorax-code-cursor-hook-v1", "utf16le").toString("base64");
+  const input = { hook_event_name: "sessionStart", conversation_id: id, session_id: id, generation_id: "", workspace_roots: ["D:\\owned\\workspace"] };
+  return hookLine(at, "Hook step requested: sessionStart") + [hookRule, "sessionStart", hookRule,
+    `Command: powershell -EncodedCommand ${command} (42ms) exit code: 0`, "", "INPUT:", JSON.stringify(input, null, 2), "", "OUTPUT:",
+    JSON.stringify({ additional_context: `MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=${id}` }, null, 2),
+    "", "STDERR:", "", hookRule, ""].join("\n");
+}
+// Runs the real launch, session and readiness functions with the real Hooks log reader. Each poll delay advances virtual
+// time and then appends the log events due by then; events are [at, launch directory, text].
+async function readinessChain(t, platform, events) {
+  const home = await realpath(await mkdtemp(join(tmpdir(), "cursor-native-readiness-")));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const pending = [...events].sort((a, b) => a[0] - b[0]), report = {}, stages = [], requests = [], reads = [];
+  let clock = hookBase;
+  const flush = async () => {
+    while (pending.length && pending[0][0] <= clock - hookBase) {
+      const [, launch, text] = pending.shift();
+      const log = join(home, "logs", launch, "window1", `output_${launch}`, "cursor.hooks.workspaceId-fixture.log");
+      await mkdir(dirname(log), { recursive: true });
+      await appendFile(log, text.replaceAll("\n", "\r\n"));
+    }
+  };
+  await flush();
+  const child = childProcess();
+  t.after(() => { child.stdout.end(); child.stderr.end(); });
+  const page = { url: () => "file:///workbench.html", setDefaultTimeout() {},
+    locator: () => ({ count: async () => 1, getAttribute: async () => "completed" }),
+    async evaluate(callback, id) {
+      const text = String(callback);
+      if (text.includes("Boolean(window.driver)")) return true;
+      if (text.includes("devGetComposerDataForTesting")) return { composerId: hookSession };
+      if (text.includes("workbench.action.chat.open")) requests.push([id ? "resume" : "create", clock - hookBase]);
+    } };
+  const scope = nativeScope(["startApp", "openSession", "waitFor", "waitForHookReady", "beginHookTiming", "observeHookTiming", "finishHookTiming"], {
+    process: { platform }, macos: undefined, windows: platform === "win32" ? {} : undefined, report, AbortSignal,
+    Date: { now: () => clock }, async delay(milliseconds) { clock += milliseconds; await flush(); },
+    userData: home, env: {}, turns: [], agent: { url: "http://127.0.0.1:1", runs: [] }, appPath: "/owned/app", root: "/owned",
+    workspace: "/owned/workspace", debugPort: 1, spawn: () => child, fetch: async () => ({ ok: true }),
+    chromium: { connectOverCDP: async () => ({ contexts: () => [{ pages: () => [page] }] }) },
+    async waitForDriverReady(predicate) { assert.equal(await predicate(), true); },
+    checkpointReport() { stages.push(report.stage); },
+    collectCursorAppHookTiming(input) { reads.push(input.sessionId ?? null); return collectCursorAppHookTiming(input); } });
+  return { scope, report, stages, requests, reads, now: () => clock - hookBase };
+}
+
+test("a new session is created only after this launch loads its Hooks and is submitted only after its own sessionStart", async (t) => {
+  for (const platform of ["linux", "darwin", "win32"]) {
+    // Configuration is reloading until 3s, and the session's own sessionStart is written at 6s without any submission.
+    const chain = await readinessChain(t, platform, [[1000, "20261027T090000", hookInitialized(1000)],
+      [1500, "20261027T090000", hookLine(1500, "Reloading hooks configuration...")], [3000, "20261027T090000", hookLoaded(3000)],
+      [6000, "20261027T090000", hookSessionStart(6000, hookSession)]]);
+    await chain.scope.startApp();
+    assert.equal(await chain.scope.openSession(), hookSession);
+    assert.deepEqual(chain.requests, [["create", 3000]], platform);
+    assert.equal(chain.now(), 6000, platform);
+    assert.deepEqual(chain.stages, ["hook-config-ready", "session-open", "hook-session-ready"], platform);
+    assert.equal(chain.scope.appLaunch, 1, platform);
+    assert.equal(chain.scope.readyHookSessions.get(hookSession), 6000, platform);
+    assert.deepEqual(Array.from(chain.report.hookTimings, ({ phase, appLaunch }) => [phase, appLaunch]), [["config", 1], ["session", 1]], platform);
+  }
+});
+
+test("another session's or an earlier launch's sessionStart cannot satisfy a session wait, which fails before submission", async (t) => {
+  for (const platform of ["linux", "darwin", "win32"]) for (const own of [false, true]) {
+    // An earlier launch ran this session's sessionStart; the current launch runs only another session's until 9s.
+    const chain = await readinessChain(t, platform, [
+      [-60000, "20261027T085900", hookInitialized(-60000) + hookLoaded(-59000) + hookSessionStart(-58000, hookSession)],
+      [2000, "20261027T090000", hookInitialized(1000) + hookLoaded(2000)],
+      [4000, "20261027T090000", hookSessionStart(4000, hookForeign)],
+      ...own ? [[9000, "20261027T090000", hookSessionStart(9000, hookSession)]] : []]);
+    await chain.scope.startApp();
+    const submitted = [];
+    const error = await chain.scope.openSession().then(() => { submitted.push(chain.now()); }, (caught) => caught);
+    if (own) {
+      assert.deepEqual(submitted, [9000], platform);
+      continue;
+    }
+    assert.equal(error?.code, "CURSOR_APP_SESSION_START_READY_TIMEOUT", platform);
+    assert.deepEqual(submitted, [], platform);
+    assert.equal(chain.report.stage, "hook-session-ready", platform);
+    const failure = chain.report.hookReadinessFailure;
+    assert.equal(failure.phase, "session"); assert.equal(failure.appLaunch, 1); assert.equal(failure.timeoutKind, "overall");
+    assert.equal(failure.waitElapsedMs, 30000);
+    assert.equal(failure.lastObservation.requiredUserHooksLoaded, true); assert.equal(failure.lastObservation.sessionStartReady, false);
+    assert.equal(failure.sessionDiagnosticsStatus, "completed");
+    assert.equal(failure.sessionStart.currentLogFiles, 1); assert.equal(failure.sessionStart.unscopedRequests, 1);
+    assert.equal(failure.sessionStart.ownedExecutionBlocks, 1); assert.equal(failure.sessionStart.filteredExecutionBlocks.session, 1);
+    assert.deepEqual(failure.sessionStart.executions, []);
+  }
+});
+
+test("a resumed session waits only for its launch's Hooks configuration, and Windows turns stay unobserved", async (t) => {
+  for (const platform of ["linux", "darwin", "win32"]) {
+    const chain = await readinessChain(t, platform, [[1000, "20261027T090000", hookInitialized(1000) + hookLoaded(1000)],
+      [2000, "20261027T090000", hookSessionStart(2000, hookSession)],
+      [20000, "20261027T090100", hookInitialized(20000) + hookLoaded(20000)]]);
+    await chain.scope.startApp();
+    await chain.scope.openSession();
+    // The next launch logs no sessionStart for the resumed session.
+    await chain.scope.startApp();
+    assert.equal(chain.now(), 20000, platform);
+    assert.equal(chain.scope.appLaunch, 2, platform);
+    assert.equal(chain.scope.readyHookSessions.size, 0, platform);
+    const reads = chain.reads.length;
+    assert.equal(await chain.scope.openSession(hookSession), hookSession);
+    assert.deepEqual(chain.requests.at(-1), ["resume", 20000], platform);
+    assert.equal(chain.reads.length, reads, platform);
+    assert.equal(chain.scope.activeHookTiming, undefined, platform);
+    // Repo Memory starts its turn timing through the same function.
+    chain.scope.beginHookTiming("turn", hookSession, { runIndex: 0, resumedSession: true });
+    await chain.scope.observeHookTiming();
+    assert.equal(chain.scope.activeHookTiming?.phase, platform === "win32" ? undefined : "turn", platform);
+    assert.equal(chain.reads.length, reads + (platform === "win32" ? 0 : 1), platform);
   }
 });
 
@@ -1062,7 +1192,7 @@ async function readinessFailureFixture(options = {}) {
     },
   });
   const finish = nativeFunction("finishHookTiming", { activeHookTiming: current, report });
-  const gate = nativeFunction("waitForHookReady", { process: { platform: "darwin" }, activeHookTiming: current,
+  const gate = nativeFunction("waitForHookReady", { process: { platform: options.platform ?? "darwin" }, activeHookTiming: current,
     appLaunch: 1, appStartedAt: 0, userData: "/owned/app-data", report, bounded, waitFor, Date: { now: () => clock },
     beginHookTiming(phase, id) { assert.equal(phase, "session"); assert.equal(id, sessionId); },
     observeHookTiming: observe, finishHookTiming: finish,
@@ -1175,4 +1305,114 @@ test("an outer timeout during session diagnostics recovers the first failure fro
   assert.equal(output.nativeExecution.finalReport, "missing");
   assert.equal(output.stage, "hook-session-ready");
   assert.equal(JSON.stringify(output).includes(privateCanary), false);
+});
+
+test("Windows readiness failures keep the frozen first failure and recover it from the progress checkpoint", async () => {
+  const overall = await readinessFailureFixture({ platform: "win32" });
+  assert.equal(overall.error.code, "CURSOR_APP_SESSION_START_READY_TIMEOUT");
+  assert.equal(overall.report.hookReadinessFailure.timeoutKind, "overall");
+  assert.equal(overall.report.hookReadinessFailure.sessionDiagnosticsStatus, "completed");
+  assert.deepEqual(overall.deadlines, [5000, 5000, 1000]);
+  const pending = await readinessFailureFixture({ platform: "win32", predicateTimeout: true });
+  assert.equal(pending.report.hookReadinessFailure.timeoutKind, "predicate");
+  const before = JSON.stringify(pending.report);
+  pending.resolveRead({ readStatus: "present", currentLogFiles: 1, requiredUserHooksLoaded: true, sessionStartReady: true });
+  await new Promise(setImmediate);
+  assert.equal(JSON.stringify(pending.report), before);
+  assert.equal(pending.readyHookSessions.size, 0);
+  const late = await readinessFailureFixture({ platform: "win32", diagnosticTimeout: true });
+  const checkpoint = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: "win32",
+    node: "24.22.0", version: "3.27.14", evidence: {}, ...late.checkpoints[1],
+    hookTimings: [projectCursorAppHookTiming({ phase: "session", appLaunch: 1 })] };
+  const output = await collectCursorAppNativeReport({ expected: { expectedVersion: "3.27.14", platform: "win32" },
+    fallback: { status: "FAIL", evidence: {} }, execution: classifyCursorAppExecution({ code: "ETIMEDOUT" }),
+    exitErrorCode: "CURSOR_APP_NATIVE_EXIT", async readReport(name) {
+      if (name === "report.json") throw Object.assign(new Error(privateCanary), { code: "ENOENT" });
+      return JSON.stringify(checkpoint);
+    } });
+  assert.equal(output.errorCode, "CURSOR_APP_SESSION_START_READY_TIMEOUT");
+  assert.equal(output.stage, "hook-session-ready");
+  assert.equal(output.hookReadinessFailure.code, output.errorCode);
+  assert.equal(output.hookReadinessFailure.sessionDiagnosticsStatus, "not-requested");
+  // Windows reports keep the readiness failure but still carry no per-phase Hook timing.
+  assert.equal(Object.hasOwn(output, "hookTimings"), false);
+  assert.equal(JSON.stringify(output).includes(privateCanary), false);
+});
+
+test("timeline marks record launches, new sessions and the step before Enter on every platform without waiting", async () => {
+  let now = 100;
+  const checkTimeline = { launches: [], sessions: [] };
+  const mark = nativeFunction("markTimeline", { checkTimeline, Date: { now: () => now } });
+  mark("launch"); now = 120; mark("create", "first", 105); now = 130; mark("submit", "first"); mark("submit", "unknown");
+  now = 200; mark("launch"); now = 210; mark("submit", "first");
+  assert.deepEqual(JSON.parse(JSON.stringify(checkTimeline)), { launches: [100, 200], sessions: [{ id: "first", launch: 1,
+    requestedAt: 105, observedAt: 120, submits: [{ launch: 1, at: 130 }, { launch: 2, at: 210 }] }] });
+  // The launch mark comes right before the spawn on every platform.
+  for (const platform of ["linux", "darwin", "win32"]) {
+    const order = [], stop = new Error("spawn observed");
+    const start = nativeFunction("startApp", { process: { platform }, report: {}, macos: undefined, windows: platform === "win32" ? {} : undefined,
+      appPath: "/owned/app", root: "/owned", workspace: "/owned/workspace", agent: { url: "http://127.0.0.1:1" }, debugPort: 1, env: {},
+      markTimeline(kind) { order.push(kind); }, spawn() { order.push("spawn"); throw stop; } });
+    await assert.rejects(start(), (error) => error === stop);
+    assert.deepEqual(order, ["launch", "spawn"], platform);
+  }
+  const selected = "11111111-1111-4111-8111-111111111111", marks = [], order = [];
+  for (const resumed of [false, true]) {
+    const open = nativeFunction("openSession", { report: {}, turns: [], agent: { runs: [] }, bounded: (promise) => promise,
+      Date: { now: () => { order.push("now"); return 7; } }, markTimeline(...args) { marks.push(args); },
+      page: { async evaluate(callback, id) { order.push("evaluate"); return id ? undefined : { composerId: selected }; },
+        locator: () => ({ count: async () => 1 }) },
+      async waitFor(predicate) { assert.equal(await predicate(), true); } });
+    await open(resumed ? selected : undefined);
+  }
+  assert.deepEqual(order.slice(0, 2), ["now", "evaluate"]);
+  assert.deepEqual(marks, [["create", selected, 7]]);
+  const calls = [];
+  const submit = nativeFunction("submitPrompt", { markHookSubmit() { calls.push("mark"); },
+    markTimeline(kind, id) { calls.push(`${kind}:${id}`); }, page: {}, bounded: (promise) => promise });
+  await submit({ async fill() { calls.push("fill"); }, async press(key) { calls.push(key); } }, { prompt: "synthetic" }, { sessionId: "first" });
+  assert.deepEqual(calls, ["fill", "mark", "submit:first", "Enter"]);
+  const actions = [], finished = new Error("submission observed");
+  const input = { async fill() { actions.push("fill"); }, async press(key) { actions.push(key); throw finished; } };
+  const interrupt = nativeFunction("interruptPendingShell", { agent: { runs: [] }, report: {}, interruption: undefined,
+    workspace: "/owned/workspace", interruptedFixture: { prompt: "synthetic interruption" }, async openSession() { return "interrupted"; },
+    markTimeline(kind, id) { actions.push(`${kind}:${id}`); }, page: { locator: () => ({ locator: () => input }) } });
+  await assert.rejects(interrupt(), (error) => error === finished);
+  assert.deepEqual(actions, ["fill", "submit:interrupted", "Enter"]);
+});
+
+test("the final Hook timeline has its own time and size budget and never replaces the result", async () => {
+  const value = { collection: "completed", readStatus: "present", filesRead: 4, launches: [{ launch: 1, logFiles: 1 }] };
+  for (const outcome of ["completed", "timeout", "failed", "oversized"]) {
+    const report = { status: "FAIL", errorCode: "CURSOR_APP_SESSION", stage: "session-open", evidence: { cleanup: true },
+      ...(outcome === "oversized" ? { padding: "x".repeat(60 * 1024) } : {}) };
+    const before = JSON.stringify(report), calls = [], waits = [];
+    const record = nativeFunction("recordHookTimeline", { report, userData: "/owned/app-data", agent: { runs: ["run"] },
+      checkTimeline: { launches: [1], sessions: [{ id: "first" }] }, projectCursorAppHookTimeline,
+      collectCursorAppHookTimeline(input) {
+        calls.push(input);
+        return outcome === "timeout" ? new Promise(() => {}) : outcome === "failed" ? Promise.reject(new Error(privateCanary)) : Promise.resolve(value);
+      },
+      async bounded(promise, code, timeoutMs, onTimeout) {
+        calls.push([code, timeoutMs]);
+        if (outcome !== "timeout") return promise;
+        onTimeout();
+        throw Object.assign(new Error(code), { code });
+      },
+      async delay(milliseconds) { waits.push(milliseconds); } });
+    await record();
+    const { hookTimeline, ...rest } = report;
+    assert.equal(JSON.stringify(rest), before, outcome);
+    assert.equal(hookTimeline.collection, outcome);
+    assert.equal(hookTimeline.readStatus, ["completed", "oversized"].includes(outcome) ? "present" : "unavailable");
+    assert.equal(hookTimeline.launches.length, outcome === "completed" ? 1 : 0);
+    assert.deepEqual(JSON.parse(JSON.stringify(calls)), [{ home: "/owned/app-data", launches: [1], sessions: [{ id: "first" }], runs: ["run"] },
+      ["CURSOR_APP_HOOK_TIMELINE_TIMEOUT", 2000]]);
+    // A timed-out read gets a bounded chance to close its log before state cleanup.
+    assert.deepEqual(waits, outcome === "timeout" ? [5000] : []);
+    assert.equal(JSON.stringify(report).includes(privateCanary), false);
+  }
+  const final = source.slice(source.indexOf("\n}\nfinally {"));
+  assert.ok(final.indexOf('report.status = "PASS"') < final.indexOf("await recordHookTimeline()")
+    && final.indexOf("await recordHookTimeline()") < final.indexOf("await rm(root"));
 });

@@ -10,8 +10,9 @@ import {
   cleanupDockerResources, cursorAppNodeImage, cursorAppRelease, makeContainerArgs, projectNativeReport,
   readReleaseManifest, resolveLocalDockerEndpoint, runCursorAppContainerNative, stageCursorAppChecks, verifyCursorAppArtifact,
 } from "./cursor-app-container-check.mjs";
+import { readAcceptance } from "../shared/client-acceptance.mjs";
 import { classifyCursorAppExecution } from "./cursor-app-report.mjs";
-import { baselineRelease } from "./cursor-app-release.mjs";
+import { acceptedReleases, baselineRelease } from "./cursor-app-release.mjs";
 
 const runId = "11111111-1111-4111-8111-111111111111";
 const containerId = "a".repeat(64), imageId = `sha256:${"b".repeat(64)}`;
@@ -107,6 +108,11 @@ test("release selection uses daemon architecture and the requested frozen channe
     for (const channel of ["baseline", "latest"]) {
       assert.deepEqual(cursorAppRelease(architecture, { releaseManifest: manifest, channel }), { ...manifest[channel][platform], arch });
     }
+  }
+  // A pull request's inventory pins the Linux baseline and accepted release.
+  const pinned = JSON.parse(JSON.stringify(acceptedReleases(readAcceptance("cursor"))));
+  for (const channel of ["baseline", "accepted"]) {
+    assert.deepEqual(cursorAppRelease("amd64", { releaseManifest: pinned, channel }), { ...pinned[channel]["linux-x64"], arch: "amd64" });
   }
   assert.throws(() => cursorAppRelease("amd64", { channel: "latest" }), /CURSOR_CONTAINER_RELEASE/);
   assert.throws(() => cursorAppRelease("amd64", { releaseManifest: manifest, channel: "preview" }), /CURSOR_CONTAINER_RELEASE/);

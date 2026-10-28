@@ -31,7 +31,7 @@ export function cursorAppRelease(architecture, { releaseManifest, channel = "bas
   const arch = ["x64", "x86_64", "amd64"].includes(architecture) ? "amd64"
     : ["arm64", "aarch64"].includes(architecture) ? "arm64" : undefined;
   check(arch, "CURSOR_CONTAINER_ARCH");
-  check(["baseline", "latest"].includes(channel), "CURSOR_CONTAINER_RELEASE");
+  check(["baseline", "latest", "accepted"].includes(channel), "CURSOR_CONTAINER_RELEASE");
   const platform = arch === "amd64" ? "linux-x64" : "linux-arm64";
   check(releaseManifest === undefined ? channel === "baseline"
     : releaseManifest?.schemaVersion === 1 && typeof releaseManifest[channel] === "object"
@@ -226,7 +226,7 @@ export async function runContainerCheck(candidatePath, reportPath, { releaseMani
     check(directory.isDirectory() && !directory.isSymbolicLink() && (await readdir(destination)).length === 0, "CURSOR_CONTAINER_OUTPUT");
     output = await realpath(destination);
     const nodeImage = cursorAppNodeImage(nodeMajor);
-    check(["baseline", "latest"].includes(channel), "CURSOR_CONTAINER_RELEASE");
+    check(["baseline", "latest", "accepted"].includes(channel), "CURSOR_CONTAINER_RELEASE");
     root = await mkdtemp(join(tmpdir(), "memorax-cursor-app-ci-"));
     const endpoint = await resolveLocalDockerEndpoint();
     const dockerEnvironment = { ...process.env, DOCKER_CONTEXT: "", DOCKER_HOST: endpoint };

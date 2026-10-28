@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics, projectCursorAppDriverDiagnostics,
   projectCursorAppBackendDiagnostics, projectCursorAppSubmissionDiagnostics,
   projectCursorAppShellDiagnostics, projectCursorAppStopDiagnostics, projectCursorAppWindowsStopDiagnostics } from "./cursor-app-diagnostics.mjs";
-import { projectCursorAppHookDiagnostics, projectCursorAppHookTiming, projectCursorAppHookReadinessFailure } from "./cursor-app-hook-diagnostics.mjs";
+import { projectCursorAppHookDiagnostics, projectCursorAppHookTiming, projectCursorAppHookReadinessFailure,
+  projectCursorAppHookTimeline } from "./cursor-app-hook-diagnostics.mjs";
 import { projectCursorAppSkillHookContext } from "./cursor-app-hook-context.mjs";
 import { projectCursorRepoMemoryDelegation } from "./cursor-app-repo-memory-check.mjs";
 import { projectWindowsProcessAuditDiagnostics } from "./cursor-app-windows-runtime.mjs";
@@ -79,6 +80,8 @@ export function projectCursorAppReport(input, { expectedVersion, nodeMajor = "24
   if (["linux", "darwin"].includes(platform) && input.hookTimings !== undefined) {
     report.hookTimings = (Array.isArray(input.hookTimings) ? input.hookTimings.slice(0, 32) : []).map(projectCursorAppHookTiming);
   }
+  // Same shape for PASS and FAIL on every platform, so a failing cell can be compared with its baseline.
+  if (input.hookTimeline !== undefined) report.hookTimeline = projectCursorAppHookTimeline(input.hookTimeline);
   if (input.status === "FAIL" && input.skillHookContext !== undefined) report.skillHookContext = projectCursorAppSkillHookContext(input.skillHookContext);
   if (input.status === "FAIL" && input.repoMemoryDelegation !== undefined) report.repoMemoryDelegation = projectCursorRepoMemoryDelegation(input.repoMemoryDelegation);
   if (input.status === "FAIL" && input.backendDiagnostics !== undefined) report.backendDiagnostics = projectCursorAppBackendDiagnostics(input.backendDiagnostics);
