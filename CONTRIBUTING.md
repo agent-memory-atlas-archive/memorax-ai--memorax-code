@@ -341,11 +341,13 @@ Contract tests that only the package or WorkBuddy releases job runs, such as
 request runs them. The scope job's summary lists each changed file with its
 clients and reason.
 
-A selected client keeps its complete matrix: the same baseline and latest
-versions, platforms, and suites as release acceptance. The package job resolves
-client and desktop release versions only for selected clients, and the WorkBuddy
-releases job asks for WorkBuddy releases only when WorkBuddy is selected. An
-unselected client resolves no version, runs no matrix, and skips its result job.
+A selected client keeps its complete matrix: the same platforms and suites as
+release acceptance, with the baseline and accepted versions pinned in the
+[client acceptance manifest](#client-acceptance-versions) instead of a latest
+lookup. The package job reads client and desktop release versions only for
+selected clients, and the WorkBuddy releases job reads WorkBuddy releases only
+when WorkBuddy is selected. An unselected client looks up and downloads no
+version, runs no matrix, and skips its result job.
 Each selected client still reports `Codex functional result`,
 `OpenCode functional result`, `Claude native smoke result`,
 `CodeBuddy functional result`, `Cursor App canary result`, or
@@ -384,13 +386,15 @@ check name and claim no functional acceptance.
 
 The native client functional workflow also runs on `main` every day at 03:17
 UTC as a compatibility monitor. Like release acceptance, it resolves every
-client's baseline and latest versions and runs every client's complete matrix,
-including WorkBuddy, but it records no release candidate. It neither gates
-merges nor accepts a release: a failure shows that a client release, platform,
-or service changed, or that `main` regressed for a client that no recent pull
-request selected. GitHub sends a scheduled run's failure notification only to
-the user who last changed its `cron` line, so maintainers should review the
-monitor's runs.
+client's baseline and official latest versions, not the pinned versions pull
+requests use, and runs every client's complete matrix, including WorkBuddy, but
+it records no release candidate. It neither gates merges nor accepts a release:
+a failure shows that a client release, platform, or service changed, or that
+`main` regressed for a client that no recent pull request selected. A client
+whose matrix passes here becomes a candidate for the next
+[acceptance update](#updating-accepted-versions). GitHub sends a scheduled run's
+failure notification only to the user who last changed its `cron` line, so
+maintainers should review the monitor's runs.
 
 Protect `main` in GitHub branch protection by requiring `Tests`,
 `Documentation`, and `PR acceptance` from GitHub Actions, requiring branches to
@@ -402,15 +406,85 @@ either never report under its formal name or report a skip that validates
 nothing. When `main` moves, update
 an open pull request to rerun both workflows on the new merge result. This
 setting is managed separately from the workflows. The `Tests` check runs
-`scripts/ci/shared/workflow-scenarios.test.mjs` and
-`scripts/ci/shared/native-scope.test.mjs`. The first evaluates the expressions
-these workflows use for triggers, job conditions, the package job's version
-lookups, check names, and concurrency groups in each event, manual selection,
-and client selection, and runs each result script, including `PR acceptance`,
-against failed, cancelled, and skipped dependencies and partial selections. The
-second checks the selection rules, the command on a merge commit, and this
-repository's own files. Both are source contracts, not a complete model of
-GitHub Actions execution.
+`scripts/ci/shared/workflow-scenarios.test.mjs`,
+`scripts/ci/shared/native-scope.test.mjs`, and
+`scripts/ci/shared/client-acceptance.test.mjs`. The first evaluates the
+expressions these workflows use for triggers, job conditions, the package job's
+pinned and latest version lookups, check names, and concurrency groups in each
+event, manual selection, and client selection, and runs each result script,
+including `PR acceptance`, against failed, cancelled, and skipped dependencies
+and partial selections. The second checks the selection rules, the command on a
+merge commit, and this repository's own files. The third validates the client
+acceptance manifest and, without network access, its fail-closed reader. All
+three are source contracts, not a complete model of GitHub Actions execution.
+
+### Client Acceptance Versions
+
+Pull requests install fixed client versions from the version-controlled
+[client acceptance manifest](scripts/ci/shared/client-acceptance.json) instead
+of querying the latest release; the compatibility monitor and release acceptance
+keep resolving official latest releases. Each client has two channels:
+
+- `baseline` is the reproducible floor named in each client section below. It
+  changes only together with the code that pins it, never in a routine update,
+  and the tests require both to agree.
+- `accepted` is the most recent version that passed this repository's native
+  matrix. Pull request matrices, summaries, reports, and artifact names label it
+  `accepted`, or `baseline+accepted` when it equals the baseline, never `latest`.
+
+Every entry records its version and acceptance: the runs that passed it, with
+failed cells, rechecks, and warnings kept on record. npm clients record the
+package, registry, `dist.integrity`, and `dist.shasum`. Cursor App records the
+release commit and, per platform, the download URL, SHA-256 with its source,
+and size. WorkBuddy records each platform's desktop package (version, URL, and
+SHA-256) separately from its bundled runtime version. A client's `deferred` list
+names versions held back after a failed acceptance. `runs` gives each cited
+run's event, pull request, head commit, date, and rerun scope, and `gaps` lists
+what the records do not establish.
+
+A pull request reads only the entries of the clients it selects; an unselected
+client is neither looked up nor downloaded.
+[client-acceptance.mjs](scripts/ci/shared/client-acceptance.mjs) compares both
+pinned npm versions with the registry's `dist.integrity` and `dist.shasum`
+before the matrix runs. Cursor App freezes the recorded releases, and each
+download must match its recorded SHA-256 and, where one is recorded, its size.
+WorkBuddy runners
+require the recorded bundled runtime version and the recorded SHA-256 on macOS
+and Windows and for an accepted Linux release with its own job; the Linux
+baseline hash stays advisory. A missing client or channel, an unreadable or
+invalid manifest, a failed registry lookup, or an integrity mismatch fails the
+run; nothing falls back to a latest lookup or another version.
+
+The manifest and its reader live in `scripts/ci/shared/`, so changing either
+selects every client and runs every client's complete native matrix: an
+acceptance update is never treated as a change that needs no client tests.
+
+#### Updating Accepted Versions
+
+Accepted versions change only through a reviewed pull request. Collect a week's
+updates in one pull request:
+
+1. For each client, choose the newest version that passed its complete matrix
+   in a recent compatibility monitor or release acceptance run. The run's input
+   record and summaries name the exact versions. Cursor App's frozen inventory
+   and cell evidence record the download hashes and sizes, and the WorkBuddy
+   frozen releases and reports record the reference and downloaded SHA-256.
+2. Record each chosen version under `accepted` with its download source and
+   integrity, add the runs to `runs` and to its `acceptance`, and keep earlier
+   failures and warnings on record.
+3. Check the edit with `node --test scripts/ci/shared/client-acceptance.test.mjs`
+   and, for each updated npm client,
+   `node scripts/ci/shared/client-acceptance.mjs npm-matrix <client>`, which
+   compares the recorded integrity with the registry.
+4. Merge only after `PR acceptance` passes: the manifest change runs every
+   client's complete matrix with the new inputs. When a client fails, restore
+   its previous `accepted` entry, add the failed version to its `deferred` list
+   with the runs and reason, and keep the other updates. Retry the deferred
+   version in a later update.
+
+Nothing commits, opens, or merges these updates automatically. A pull request
+that needs a newer client waits for the next update or carries its own manifest
+change, which runs every client's matrix.
 
 ### Release Acceptance
 
@@ -420,8 +494,9 @@ defaults to `mode=release-acceptance`. It runs the complete acceptance for the
 dispatched commit: the CI workflow's `Tests` and `Documentation` jobs, called
 with an explicit purpose, candidate commit, and comparison base; the package
 job's single candidate tarball; and every client matrix, including WorkBuddy.
-It never applies the pull request scope: it resolves every client's versions,
-runs every matrix, and skips the scope and `PR acceptance` jobs. The other
+It never applies the pull request scope or its pinned versions: it resolves
+every client's official latest versions, runs every matrix, and skips the scope
+and `PR acceptance` jobs. The other
 modes, `provider-only`, `opencode-initialization-diagnostic`, and
 `workbuddy-download-diagnostic`, are isolated diagnostics and never accept a
 release.
@@ -595,7 +670,8 @@ Native-client runners, helpers, and their adjacent tests are grouped under
 - `codebuddy-workbuddy/` owns both clients' entrypoints and shared checks.
 - `shared/` owns cross-client cleanup tests, Windows user PATH utilities, the
   first-failure evidence recorder, the workflow scenario contract, the pull
-  request native client scope and the release acceptance record.
+  request native client scope, the client acceptance manifest and the release
+  acceptance record.
 
 The pull request scope relies on this layout: a file in a client's CI directory
 selects that client, and a file elsewhere selects every client. Product adapter
@@ -705,12 +781,14 @@ not build and install the final tarball.
 
 Native jobs use temporary user and client homes on Ubuntu, macOS, and Windows
 with Node.js 24, plus Ubuntu with the minimum Node.js 20 runtime. They install
-the same artifact. Codex 0.147.0 remains the reproducible baseline. Each workflow
-resolves the npm `latest` tag once and also checks that exact release on all
-three systems with Node.js 24. When latest equals the baseline, those jobs cover
-both tracks without duplicate execution; Ubuntu/Node.js 20 remains a baseline
-check. Requested and actual CLI versions are recorded and must match. A failed
-latest-version check fails the workflow instead of falling back to the baseline.
+the same artifact. Codex 0.147.0 remains the reproducible baseline. A pull
+request also checks the [accepted version](#client-acceptance-versions); the
+compatibility monitor and release acceptance instead resolve the npm `latest`
+tag once. That exact release runs on all three systems with Node.js 24. When it
+equals the baseline, those jobs cover both tracks without duplicate execution;
+Ubuntu/Node.js 20 remains a baseline check. Requested and actual CLI versions
+are recorded and must match. A failed accepted- or latest-version check fails
+the workflow instead of falling back to the baseline.
 The `Codex functional result` summary requires the package and entire matrix to
 succeed; failed, cancelled, or skipped dependencies fail it. Provider-only manual
 runs use a different result name and cannot supply this functional result. This
@@ -879,9 +957,11 @@ building or invoking npm's dry-run.
 
 The same workflow has an independent OpenCode matrix and an `OpenCode functional
 result` check. It consumes the package job's exact tarball, without rebuilding
-per client or operating system. OpenCode 1.18.18 is the reproducible baseline;
-the workflow resolves npm's latest stable version once and tests that exact
-version without fallback. Both tracks run on Ubuntu, macOS, and Windows with
+per client or operating system. OpenCode 1.18.18 is the reproducible baseline.
+Pull requests also test the [accepted version](#client-acceptance-versions); the
+compatibility monitor and release acceptance resolve npm's latest stable version
+once instead. Either is tested as that exact version without fallback. Both
+tracks run on Ubuntu, macOS, and Windows with
 Node.js 24; Ubuntu also checks the baseline with Node.js 20. Failed, cancelled,
 or skipped required jobs fail the result. The existing Codex result remains
 separate. Provider-only manual dispatch does not run either functional matrix.
@@ -987,13 +1067,15 @@ interruption, native memory, scripted Skill, permission, and Repo Memory global
 configuration categories. Client-specific evidence and exclusions below still
 differ from the Codex and OpenCode suites. It consumes the package job's exact
 validated tarball and installs the official Claude Code CLI. Version 2.1.277 is
-the baseline; npm's latest stable version is resolved once per run and tested
-as an exact release without fallback. Both tracks run on Ubuntu, macOS, and
-Windows with Node.js 24. Ubuntu also checks the baseline with Node.js 22,
-matching the official Claude npm package's minimum runtime rather than
-MemoraX Code's Node.js 20 minimum. When latest equals baseline, the Node.js 24
-jobs cover both tracks without duplicates. Requested and installed Claude
-versions must match.
+the baseline. Pull requests also test the
+[accepted version](#client-acceptance-versions); the compatibility monitor and
+release acceptance resolve npm's latest stable version once per run instead.
+Either is tested as an exact release without fallback. Both tracks run on
+Ubuntu, macOS, and Windows with Node.js 24. Ubuntu also checks the baseline with
+Node.js 22, matching the official Claude npm package's minimum runtime rather
+than MemoraX Code's Node.js 20 minimum. When the accepted or latest version
+equals the baseline, the Node.js 24 jobs cover both tracks without duplicates.
+Requested and installed Claude versions must match.
 
 The result requires the package job and every Claude smoke matrix job to
 succeed. Failed, cancelled, or skipped dependencies cannot pass it. Codex and
@@ -1128,12 +1210,15 @@ itself; use the Make target when the artifact has not already passed
 The CodeBuddy Code matrix uses the same workflow and validated MemoraX Code
 tarball, with a separate `CodeBuddy functional result` check.
 It installs the official `@tencent-ai/codebuddy-code` npm package. Version
-2.159.0 is the baseline; npm's latest stable version is resolved once per run
-and installed as an exact version without fallback. Both tracks run on Ubuntu,
-macOS, and Windows with Node.js 24. Ubuntu also runs the baseline with Node.js
-20, covering MemoraX Code's minimum and satisfying CodeBuddy's runtime
-requirement. When latest equals baseline, the Node.js 24 jobs cover both
-tracks without duplicates. Requested and installed CLI versions must match.
+2.159.0 is the baseline. Pull requests also install the
+[accepted version](#client-acceptance-versions); the compatibility monitor and
+release acceptance resolve npm's latest stable version once per run instead.
+Either is installed as an exact version without fallback. Both tracks run on
+Ubuntu, macOS, and Windows with Node.js 24. Ubuntu also runs the baseline with
+Node.js 20, covering MemoraX Code's minimum and satisfying CodeBuddy's runtime
+requirement. When the accepted or latest version equals the baseline, the
+Node.js 24 jobs cover both tracks without duplicates. Requested and installed
+CLI versions must match.
 
 The result requires both the package job and every CodeBuddy functional job to
 succeed; failed, cancelled, or skipped dependencies cannot pass it. Existing
@@ -1285,16 +1370,20 @@ The native client functional workflow runs WorkBuddy native checks automatically
 for pull requests targeting `main` that select WorkBuddy, the compatibility monitor
 and release acceptance, on `ubuntu-24.04` (x64), `macos-15`
 (arm64), and `windows-2025` (x64), using Node.js 24. Each platform runs its
-fixed baseline and the latest official desktop release resolved once for that
-run, subject to the narrow Windows fallback below. Identical full versions,
-URLs, and checksums (advisory on Linux) share one `baseline+latest`
-job; a different desktop build still gets a separate job even if its bundled
-CLI version is unchanged. One additional Ubuntu job uses the minimum supported
-Node.js 20 with the fixed Linux baseline. All four to seven jobs run the complete
-default suites. A separate job runs the WorkBuddy contract tests on every pull
-request and, when the run includes WorkBuddy, resolves the release matrix,
-without building a package; every platform consumes the
-package job's validated candidate, the same artifact as the other clients.
+fixed baseline and a second desktop release: in a pull request, the accepted
+release pinned in the [client acceptance manifest](#client-acceptance-versions);
+in the compatibility monitor and release acceptance, the latest official release
+resolved once for that run, subject to the narrow Windows fallback below.
+Identical full versions, URLs, and checksums share one `baseline+accepted` or
+`baseline+latest` job (a latest Linux release is compared without its advisory
+checksum); a different desktop build still gets a separate job even if its
+bundled CLI version is unchanged. One additional Ubuntu job uses the minimum
+supported Node.js 20 with the fixed Linux baseline. All four to seven jobs run
+the complete default suites. A separate job runs the WorkBuddy contract tests on
+every pull request and, when the run includes WorkBuddy, reads the pinned
+release matrix (pull requests) or resolves it (other runs), without building a
+package; every platform consumes the package job's validated candidate, the
+same artifact as the other clients.
 Manual `mode=workbuddy-download-diagnostic` runs only the package and WorkBuddy
 jobs. Matrix failures do not cancel the other platforms.
 The `WorkBuddy functional result` check requires both the package and the entire
@@ -1306,21 +1395,25 @@ it, as does a pull request that does not select WorkBuddy. Each cell also
 uploads a `workbuddy-report-*` artifact with
 its run and attempt, verified desktop and bundled CLI versions, channel, download
 host, and the reference and actual SHA-256 with their match or warning status, for
-the release record. The aggregate also requires the release resolution and its
+the release record; an accepted release reports `mismatch` instead of a warning
+and fails the cell. The aggregate also requires the release resolution and its
 coverage report. A successful matrix
 can have degraded Windows coverage: its summary names the untested official
 latest and the selected older release instead of claiming latest coverage.
 Each runner consumes the frozen release description. macOS and Windows require
 its selected SHA-256 before mounting or extracting; Linux records the actual
-SHA-256 and warns on differences while requiring package and runtime identity. The
+SHA-256 and warns on differences while requiring package and runtime identity,
+except that an accepted Linux release must match the SHA-256 recorded at its
+acceptance and otherwise fails before the suites run. The
 WorkBuddy-specific resolver in `scripts/ci/codebuddy-workbuddy/workbuddy-release-matrix.mjs` owns the
 baseline records, feed validation, and matrix; the three acquisition helpers
 also accept a validated release JSON file while retaining their standalone
 baseline defaults. Desktop and bundled CLI versions are checked separately,
-because the official platform releases are not synchronized. Baselines require
-the exact known CLI version; latest and fallback jobs read a stable CLI version
-from the validated package metadata and compare it with the real command's `--version`
-before the native suites. The current fixed baselines are:
+because the official platform releases are not synchronized. Baselines and
+accepted releases require the exact recorded CLI version; latest and fallback
+jobs read a stable CLI version from the validated package metadata and compare
+it with the real command's `--version` before the native suites. The current
+fixed baselines are:
 
 | Runner | Official desktop package | Bundled CLI |
 | --- | --- | --- |
@@ -1328,14 +1421,17 @@ before the native suites. The current fixed baselines are:
 | macOS arm64 | `5.6.2.39298511` DMG | `2.147.0` |
 | Windows x64 | `5.6.2.39298511` EXE | `2.147.0` |
 
-Linux functional CI permits same-version rebuilds: the same official DEB URL
-was observed returning packages built on 2026-09-10 and 2026-09-21 with different
-hashes but the same product and bundled CLI versions. Its baseline hash is a
-maintainer-recorded reference; other latest releases retain the official feed
-hash as a reference. A difference emits an explicit warning and diagnostic,
-not an acquisition failure. The success report records the actual download hash;
-neither downloads nor feeds replace the baseline reference. Linux deduplicates
-the same full version and URL regardless of reference hash differences.
+Linux functional CI permits same-version rebuilds of the baseline and latest
+releases: the same official DEB URL was observed returning packages built on
+2026-09-10 and 2026-09-21 with different hashes but the same product and bundled
+CLI versions. Its baseline hash is a maintainer-recorded reference; other latest
+releases retain the official feed hash as a reference. A difference emits an
+explicit warning and diagnostic, not an acquisition failure. The success report
+records the actual download hash; neither downloads nor feeds replace the
+baseline reference. Linux deduplicates the same full version and URL regardless
+of reference hash differences. An accepted Linux release is pinned to the hash
+its acceptance recorded, so a rebuild fails pull requests until an acceptance
+update records the new package.
 
 The official HTTPS source, successful complete HTTP 200 response, valid DEB
 format, package name/version/architecture, and bundled CLI identity/version
@@ -1556,13 +1652,16 @@ successful native jobs on each target platform.
 
 The native-client workflow tests the official **Cursor Desktop App**, not Cursor
 CLI, on Ubuntu 24.04 x64, macOS 15 arm64 and Windows 2025 x64. Each platform runs
-baseline **3.21.18** and the latest stable release on Node 24. Identical release
-identities share a cell; Linux also runs baseline on Node 22.13 or newer for its
-native SQLite reader. The native-check process must use the selected Node
-version, including inside the Linux container.
+baseline **3.21.18** and a second release on Node 24: the
+[accepted release](#client-acceptance-versions) in a pull request, or the latest
+stable release in the compatibility monitor and release acceptance. Identical
+release identities share a cell; Linux also runs baseline on Node 22.13 or newer
+for its native SQLite reader. The native-check process must use the selected
+Node version, including inside the Linux container.
 
 Release resolution runs once in the package job of each run that includes Cursor
-App. Every cell consumes the frozen
+App; a pull request freezes the recorded releases instead, without a release
+lookup. Every cell consumes the frozen
 inventory and the same validated candidate npm artifact, with no latest-version
 fallback. Package, lifecycle, native acceptance and cleanup failures fail the
 aggregate; a local or single-platform pass is not three-platform evidence.
@@ -1623,12 +1722,16 @@ duplicate, cross-session or late requests fail, including after cleanup.
 Linux baseline hashes are recorded reproducibility pins, not publisher-signed
 attestations. Latest Linux releases require the official download API and apt
 metadata to agree; the pinned apt key authenticates `InRelease`, package indexes
-and SHA-256. macOS verifies the mounted App's deep Apple-anchored signature,
+and SHA-256. An accepted Linux release keeps the apt SHA-256 and size recorded at
+its acceptance; a pull request does not repeat the apt lookup. macOS verifies
+the mounted App's deep Apple-anchored signature,
 publisher, bundle ID, Gatekeeper result, architecture, sealed version and
 `realCommit`, then repeats validation on the private copy and detaches before
 launch. Windows verifies the official installer and installed executable's
 Authenticode, publisher, architecture, version and release commit, waiting for
-the installer process tree. Observed desktop hashes do not replace signatures.
+the installer process tree. Observed desktop hashes do not replace signatures;
+a pull request also requires each pinned macOS and Windows download to match
+the SHA-256 and size recorded in the manifest.
 
 Linux runs non-root under Xvfb in a network-disabled Docker container with
 Chromium sandboxing, dropped capabilities, no-new-privileges and the pinned
@@ -1668,7 +1771,11 @@ node scripts/ci/cursor/cursor-app-container-check.mjs \
 The two-argument command selects baseline and Node 24. For another matrix cell,
 freeze releases with `node scripts/ci/cursor/cursor-app-release.mjs resolve-linux MANIFEST`
 (requires `gpg` and `gpgv`), then append `MANIFEST latest 24` or
-`MANIFEST baseline 22` to the container command. The metadata-only `resolve`
+`MANIFEST baseline 22` to the container command. To reproduce a pull request
+cell, freeze the recorded releases with
+`node scripts/ci/cursor/cursor-app-release.mjs accepted MANIFEST`, which makes no
+network request, and append `MANIFEST accepted 24` or `MANIFEST baseline 22`.
+The metadata-only `resolve`
 command does not verify Linux apt metadata and is not CI acceptance evidence.
 
 Only lifecycle and native `report.json` files are uploaded. Diagnostic helpers

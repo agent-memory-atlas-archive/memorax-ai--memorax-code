@@ -156,6 +156,9 @@ test("this repository's changes select the clients that can be affected", () => 
     ["scripts/ci/codex/codex-setup-pty.mjs", CLIENTS],
     [WORKFLOW, CLIENTS],
     ["scripts/ci/shared/native-scope.mjs", CLIENTS],
+    // The client acceptance manifest and its reader pin every client's pull request inputs, so an update runs every matrix.
+    ["scripts/ci/shared/client-acceptance.json", CLIENTS],
+    ["scripts/ci/shared/client-acceptance.mjs", CLIENTS],
     // Adapter files that shared code loads whichever client it serves: the Backend loads the OpenCode plugin installer to
     // clean up every client's plugins, and the setup imports the Cursor adapter's paths. The canonical Skill and the client
     // Hook runtime are shared. An adapter's tests run in Tests.

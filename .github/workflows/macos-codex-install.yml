@@ -70,11 +70,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     outputs:
-      codex-matrix: ${{ steps.codex-versions.outputs.matrix }}
-      opencode-matrix: ${{ steps.opencode-versions.outputs.matrix }}
-      claude-matrix: ${{ steps.claude-versions.outputs.matrix }}
-      codebuddy-matrix: ${{ steps.codebuddy-versions.outputs.matrix }}
-      cursor-matrix: ${{ steps.cursor-versions.outputs.matrix }}
+      codex-matrix: ${{ steps.codex-accepted.outputs.matrix || steps.codex-versions.outputs.matrix }}
+      opencode-matrix: ${{ steps.opencode-accepted.outputs.matrix || steps.opencode-versions.outputs.matrix }}
+      claude-matrix: ${{ steps.claude-accepted.outputs.matrix || steps.claude-versions.outputs.matrix }}
+      codebuddy-matrix: ${{ steps.codebuddy-accepted.outputs.matrix || steps.codebuddy-versions.outputs.matrix }}
+      cursor-matrix: ${{ steps.cursor-accepted.outputs.matrix || steps.cursor-versions.outputs.matrix }}
       artifact-ready: ${{ steps.package-check.outputs.artifact-ready }}
       # Attempt-qualified names keep an earlier attempt's inputs when a later attempt re-runs this job.
       package-artifact-name: memorax-code-package-attempt${{ github.run_attempt }}
@@ -90,10 +90,15 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
-      # Client versions are resolved only for runs whose client matrices consume them: the clients a pull request selects,
-      # and every client in the compatibility monitor and release acceptance.
+      # Client versions are read only for runs whose client matrices consume them. A pull request installs the pinned
+      # baseline and accepted versions of the clients it selects from the client acceptance manifest and never queries
+      # latest; the compatibility monitor and release acceptance resolve the official latest release of every client.
+      - name: Verify the pinned Codex acceptance versions for this pull request
+        if: github.event_name == 'pull_request' && needs.scope.outputs.codex == 'true'
+        id: codex-accepted
+        run: node scripts/ci/shared/client-acceptance.mjs npm-matrix codex
       - name: Resolve the latest Codex version once for this run
-        if: needs.scope.outputs.codex == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
+        if: github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
         id: codex-versions
         shell: bash
         run: |
@@ -115,8 +120,12 @@ jobs:
             `Codex baseline: **${baseline}**; npm latest resolved for this run: **${latest}**.\n\n` +
             `${include.length} required installation, native-flow and permission jobs; no version fallback.\n`);
           NODE
+      - name: Verify the pinned OpenCode acceptance versions for this pull request
+        if: github.event_name == 'pull_request' && needs.scope.outputs.opencode == 'true'
+        id: opencode-accepted
+        run: node scripts/ci/shared/client-acceptance.mjs npm-matrix opencode
       - name: Resolve the latest OpenCode version once for this run
-        if: needs.scope.outputs.opencode == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
+        if: github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
         id: opencode-versions
         shell: bash
         run: |
@@ -138,8 +147,12 @@ jobs:
             `OpenCode baseline: **${baseline}**; npm latest resolved for this run: **${latest}**.\n\n` +
             `${include.length} required installation, native-flow and permission jobs; no version fallback.\n`);
           NODE
+      - name: Verify the pinned Claude Code acceptance versions for this pull request
+        if: github.event_name == 'pull_request' && needs.scope.outputs.claude == 'true'
+        id: claude-accepted
+        run: node scripts/ci/shared/client-acceptance.mjs npm-matrix claude
       - name: Resolve the latest Claude Code version once for this run
-        if: needs.scope.outputs.claude == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
+        if: github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
         id: claude-versions
         shell: bash
         run: |
@@ -161,8 +174,12 @@ jobs:
             `Claude Code baseline: **${baseline}**; npm latest resolved for this run: **${latest}**.\n\n` +
             `${include.length} required lifecycle, interruption, native memory, Skill, permission and Repo Memory configuration jobs; no version fallback. Client-specific coverage remains bounded.\n`);
           NODE
+      - name: Verify the pinned CodeBuddy Code acceptance versions for this pull request
+        if: github.event_name == 'pull_request' && needs.scope.outputs.codebuddy == 'true'
+        id: codebuddy-accepted
+        run: node scripts/ci/shared/client-acceptance.mjs npm-matrix codebuddy
       - name: Resolve the latest CodeBuddy Code version once for this run
-        if: needs.scope.outputs.codebuddy == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
+        if: github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
         id: codebuddy-versions
         shell: bash
         run: |
@@ -184,8 +201,12 @@ jobs:
             `CodeBuddy Code baseline: **${baseline}**; npm latest resolved for this run: **${latest}**.\n\n` +
             `${include.length} required lifecycle, interruption, native memory, Skill, permission and Repo Memory configuration jobs; no version fallback. WorkBuddy is outside this scope; client-specific coverage remains bounded.\n`);
           NODE
+      - name: Freeze the pinned Cursor App acceptance releases for this pull request
+        if: github.event_name == 'pull_request' && needs.scope.outputs.cursor == 'true'
+        id: cursor-accepted
+        run: node scripts/ci/cursor/cursor-app-release.mjs accepted "$RUNNER_TEMP/cursor-app-releases.json"
       - name: Resolve and freeze Cursor App releases once for this run
-        if: needs.scope.outputs.cursor == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
+        if: github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
         id: cursor-versions
         shell: bash
         run: |
@@ -278,10 +299,10 @@ jobs:
         continue-on-error: true
         shell: bash
         env:
-          CODEX_MATRIX: ${{ steps.codex-versions.outputs.matrix }}
-          OPENCODE_MATRIX: ${{ steps.opencode-versions.outputs.matrix }}
-          CLAUDE_MATRIX: ${{ steps.claude-versions.outputs.matrix }}
-          CODEBUDDY_MATRIX: ${{ steps.codebuddy-versions.outputs.matrix }}
+          CODEX_MATRIX: ${{ steps.codex-accepted.outputs.matrix || steps.codex-versions.outputs.matrix }}
+          OPENCODE_MATRIX: ${{ steps.opencode-accepted.outputs.matrix || steps.opencode-versions.outputs.matrix }}
+          CLAUDE_MATRIX: ${{ steps.claude-accepted.outputs.matrix || steps.claude-versions.outputs.matrix }}
+          CODEBUDDY_MATRIX: ${{ steps.codebuddy-accepted.outputs.matrix || steps.codebuddy-versions.outputs.matrix }}
           PACKAGE_ARTIFACT_ID: ${{ steps.upload-package.outputs.artifact-id }}
           PACKAGE_ARTIFACT_DIGEST: ${{ steps.upload-package.outputs.artifact-digest }}
         run: |
@@ -735,8 +756,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     outputs:
-      matrix: ${{ steps.releases.outputs.matrix }}
-      coverage: ${{ steps.releases.outputs.coverage }}
+      matrix: ${{ steps.accepted.outputs.matrix || steps.releases.outputs.matrix }}
+      coverage: ${{ steps.accepted.outputs.coverage || steps.releases.outputs.coverage }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -757,9 +778,14 @@ jobs:
           printf 'WORKBUDDY_YAML_MODULE=%s\n' "$entry" >> "$GITHUB_ENV"
       - name: Verify WorkBuddy and shared native test contracts
         run: node --test scripts/ci/codebuddy-workbuddy/codebuddy-*.test.mjs scripts/ci/codebuddy-workbuddy/workbuddy-*.test.mjs
+      # Every run verifies the contracts above. A pull request that selects WorkBuddy runs the pinned baseline and accepted
+      # releases from the client acceptance manifest and never queries the official feeds; other runs resolve latest.
+      - name: Read the pinned WorkBuddy acceptance releases for this pull request
+        if: github.event_name == 'pull_request' && needs.scope.outputs.workbuddy == 'true'
+        id: accepted
+        run: node scripts/ci/codebuddy-workbuddy/workbuddy-release-matrix.mjs accepted
       - name: Resolve each platform's latest release once
-        # Every run verifies the contracts above; a pull request asks for WorkBuddy releases only when it selects WorkBuddy.
-        if: github.event_name != 'pull_request' || needs.scope.outputs.workbuddy == 'true'
+        if: github.event_name != 'pull_request'
         id: releases
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -930,14 +956,17 @@ jobs:
           const bundle = JSON.parse(readFileSync(join(temp, 'workbuddy-bundle.json'), 'utf8'));
           const release = JSON.parse(readFileSync(join(temp, 'workbuddy-release.json'), 'utf8'));
           // Linux records the downloaded hash and only warns on a difference; macOS and Windows stop before use unless it matches.
+          // An accepted Linux release must also match the SHA-256 its acceptance recorded, so the suites below never run it.
           const actual = String(bundle.sha256).toLowerCase();
+          const status = actual === release.sha256 ? 'match' : process.env.WORKBUDDY_CHANNEL === 'accepted' ? 'mismatch' : 'warning';
           mkdirSync(join(temp, 'workbuddy-report'), { recursive: true });
           writeFileSync(join(temp, 'workbuddy-report', 'report.json'), `${JSON.stringify({ schemaVersion: 2,
             runId: process.env.GITHUB_RUN_ID, runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
             os: process.env.WORKBUDDY_OS, node: process.env.WORKBUDDY_NODE, channel: process.env.WORKBUDDY_CHANNEL,
             desktopVersion: bundle.desktopVersion, runtimeVersion: bundle.runtimeVersion, arch: bundle.arch,
             source: new URL(release.url).host,
-            sha256: { reference: release.sha256, actual, status: actual === release.sha256 ? 'match' : 'warning' } }, null, 2)}\n`);
+            sha256: { reference: release.sha256, actual, status } }, null, 2)}\n`);
+          if (status === 'mismatch') throw new Error('WORKBUDDY_ACCEPTED_HASH_MISMATCH');
           NODE
       - name: Run strict native WorkBuddy suites with isolated local services (macOS/Linux)
         id: native-posix
@@ -1116,7 +1145,7 @@ jobs:
           PACKAGE_RESULT: ${{ needs.package.result }}
           CURSOR_RESULT: ${{ needs.cursor-app.result }}
         run: |
-          printf 'Package: **%s**\n\nCursor App Linux/macOS/Windows matrix: **%s**.\n\nUbuntu 24.04, macOS 15 and Windows 2025, baseline/latest on Node 24 and Linux baseline on Node 22. Eleven native App runs per cell cover repeated-prompt follow-up, cross-workspace isolation, App restart/resume, explicit Skill Search/Add, Shell denial, pending-Shell interruption and same-session recovery. A real foreground Hook also delegates a Repo Memory job through native Task: the managed child inherits model selection, claims the job and finishes without a bundle, requiring artifact_validation_failed, no published bundle, exited lease guard and no child automatic Add. Nine completed foreground turns produce exactly nine automatic Adds; the two explicit Skill operations bring the total Memory requests to eleven. Scripted tool requests do not validate model-driven Skill selection or successful Repo Memory generation. macOS and Windows use signature-verified Apps, isolated homes and local fixtures on fresh GitHub-hosted runners, without an additional Seatbelt or WFP prerequisite. Chromium sandboxing remains enabled. This matrix does not validate real login, OS credential-store isolation, hosted models or full functional coverage.\n' "$PACKAGE_RESULT" "$CURSOR_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Package: **%s**\n\nCursor App Linux/macOS/Windows matrix: **%s**.\n\nUbuntu 24.04, macOS 15 and Windows 2025, baseline plus the pinned accepted release (pull requests) or official latest (compatibility monitor and release acceptance) on Node 24 and Linux baseline on Node 22. Eleven native App runs per cell cover repeated-prompt follow-up, cross-workspace isolation, App restart/resume, explicit Skill Search/Add, Shell denial, pending-Shell interruption and same-session recovery. A real foreground Hook also delegates a Repo Memory job through native Task: the managed child inherits model selection, claims the job and finishes without a bundle, requiring artifact_validation_failed, no published bundle, exited lease guard and no child automatic Add. Nine completed foreground turns produce exactly nine automatic Adds; the two explicit Skill operations bring the total Memory requests to eleven. Scripted tool requests do not validate model-driven Skill selection or successful Repo Memory generation. macOS and Windows use signature-verified Apps, isolated homes and local fixtures on fresh GitHub-hosted runners, without an additional Seatbelt or WFP prerequisite. Chromium sandboxing remains enabled. This matrix does not validate real login, OS credential-store isolation, hosted models or full functional coverage.\n' "$PACKAGE_RESULT" "$CURSOR_RESULT" >> "$GITHUB_STEP_SUMMARY"
           printf '\nEvery cell also requires the isolated MemoraX package lifecycle check: fresh/repeat setup, uninstall/reinstall, real previous-version upgrade, download and replacement failure recovery, saved account/configuration retention, and four setup interruption stages: after-config-write, before-backend-start, after-backend-start, saved-account-key-cancel. The setup checkpoints use a real PTY, the existing Backend lock and a test-only Node child gate; retries require no account input and verify complete Cursor integration plus a local saved-account Search. This does not simulate power loss or start the Cursor App.\n' >> "$GITHUB_STEP_SUMMARY"
           if [[ "$PACKAGE_RESULT" != success || "$CURSOR_RESULT" != success ]]; then
             echo '::error::The package and Cursor App canary must both succeed. Failed, cancelled or skipped dependencies do not pass this check.'

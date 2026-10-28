@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
-import { baselineRelease, validateLinuxRelease } from "./cursor-app-release.mjs";
+import { acceptedMatrix, baselineRelease, validateLinuxRelease } from "./cursor-app-release.mjs";
 import { selectCursorMacosRelease } from "./cursor-app-macos-artifact.mjs";
 import { selectCursorWindowsRelease } from "./cursor-app-windows-artifact.mjs";
 
@@ -78,7 +78,7 @@ test("Cursor App matrix uses the validated candidate, frozen release inventory a
   assert.match(canary, /^    name: Cursor App \$\{\{ matrix\.channel \}\} \$\{\{ matrix\.cursor \}\} \(\$\{\{ matrix\.os \}\}, Node \$\{\{ matrix\.node \}\}\)$/m);
   assert.match(canary, /^      fail-fast: false$/m);
   assert.match(canary, /^      matrix: \$\{\{ fromJSON\(needs\.package\.outputs\.cursor-matrix\) \}\}$/m);
-  assert.match(job("package"), /^      cursor-matrix: \$\{\{ steps\.cursor-versions\.outputs\.matrix \}\}$/m);
+  assert.match(job("package"), /^      cursor-matrix: \$\{\{ steps\.cursor-accepted\.outputs\.matrix \|\| steps\.cursor-versions\.outputs\.matrix \}\}$/m);
   assert.match(canary, /actions\/download-artifact@v4\n        with:\n          name: \$\{\{ needs\.package\.outputs\.package-artifact-name \}\}\n          path: dist\/npm\/tarballs/);
   assert.match(canary, /actions\/download-artifact@v4\n        with:\n          name: \$\{\{ needs\.package\.outputs\.cursor-releases-artifact-name \}\}\n          path: \$\{\{ runner\.temp \}\}\/cursor-app-releases/);
   const uploads = canary.split("      - uses: actions/upload-artifact@v4\n");
@@ -106,17 +106,27 @@ test("Cursor package lifecycle is required in every cell before native App execu
   assert.match(script("cursor-app", name), /node scripts\/ci\/cursor\/cursor-lifecycle-check\.mjs "\$1" "\$RUNNER_TEMP\/cursor-lifecycle-report"/);
 });
 
-test("Cursor release acquisition runs once outside the matrix and excludes dedicated diagnostics", () => {
-  const step = job("package").split("      - name: Resolve and freeze Cursor App releases once for this run\n")[1];
-  const condition = step.match(/^        if: (.+)$/m)?.[1];
-  assert.ok(condition);
+test("Cursor release acquisition runs once outside the matrix, pinned for a pull request, and excludes dedicated diagnostics", () => {
+  const steps = job("package").split("\n      - ");
+  const pinned = steps.find((step) => step.startsWith("name: Freeze the pinned Cursor App acceptance releases for this pull request\n"));
+  const latest = steps.find((step) => step.startsWith("name: Resolve and freeze Cursor App releases once for this run\n"));
+  const upload = steps[steps.indexOf(latest) + 1];
+  assert.ok(pinned && latest && upload?.startsWith("uses: actions/upload-artifact@v4\n"));
+  const conditions = [pinned, latest, upload].map((step) => step.match(/^        if: (.+)$/m)?.[1]);
+  assert.ok(conditions.every(Boolean));
   for (const [event, mode, cursor] of SELECTIONS) {
-    assert.equal(evaluateCondition(condition, { event, mode, cursor }), acceptance(event, mode, cursor), `${event} ${mode} ${cursor}`);
+    const [readsPinned, resolvesLatest, uploads] = conditions.map((condition) => evaluateCondition(condition, { event, mode, cursor }));
+    const label = `${event} ${mode} ${cursor}`;
+    // A pull request freezes the pinned acceptance releases and every other Cursor run the official latest ones, never both.
+    assert.equal(readsPinned, event === "pull_request" && acceptance(event, mode, cursor), label);
+    assert.equal(resolvesLatest, event !== "pull_request" && acceptance(event, mode, cursor), label);
+    // The inventory upload requires the file, so it follows the same selection.
+    assert.equal(uploads, acceptance(event, mode, cursor), label);
   }
-  // The inventory upload requires the file, so it follows the same selection.
-  assert.equal(step.split("      - uses: actions/upload-artifact@v4\n")[1]?.match(/^        if: (.+)$/m)?.[1], condition);
   assert.equal((source.match(/node scripts\/ci\/cursor\/cursor-app-release\.mjs resolve-linux/g) ?? []).length, 1);
-  assert.match(step, /name: cursor-app-releases-attempt\$\{\{ github\.run_attempt \}\}\n          path: \$\{\{ runner\.temp \}\}\/cursor-app-releases\.json\n          if-no-files-found: error/);
+  assert.equal((source.match(/node scripts\/ci\/cursor\/cursor-app-release\.mjs accepted /g) ?? []).length, 1);
+  assert.match(pinned, /^        run: node scripts\/ci\/cursor\/cursor-app-release\.mjs accepted "\$RUNNER_TEMP\/cursor-app-releases\.json"$/m);
+  assert.match(upload, /name: cursor-app-releases-attempt\$\{\{ github\.run_attempt \}\}\n          path: \$\{\{ runner\.temp \}\}\/cursor-app-releases\.json\n          if-no-files-found: error/);
 });
 
 test("Cursor matrix independently merges exact platform releases and keeps Linux baseline Node 22", () => {
@@ -193,6 +203,17 @@ test("Cursor matrix independently merges exact platform releases and keeps Linux
   }
   assert.throws(() => execute(newer, newerMacos, 1, macos, newerWindows, { ...windows, version: "3.21.19" }));
   assert.throws(() => execute(newer, undefined, 2));
+  // A pull request's pinned matrix keeps this layout, with the accepted release in place of latest.
+  const pinned = (linux, darwin, win32) => acceptedMatrix({
+    baseline: { "linux-x64": baseline, "darwin-arm64": macos, "win32-x64-user": windows },
+    accepted: Object.fromEntries([["linux-x64", linux], ["darwin-arm64", darwin], ["win32-x64-user", win32]]
+      .map(([platform, release]) => [platform, { ...release, channel: "accepted" }])) }).include;
+  const renamed = (include) => include.map((cell) => ({ ...cell, release: cell.release.replace("latest", "accepted"),
+    channel: cell.channel.replace("latest", "accepted") }));
+  assert.deepEqual(pinned(same, sameMacos, sameWindows), renamed(execute(same)));
+  assert.deepEqual(pinned(newer, newerMacos, newerWindows), renamed(matrix));
+  assert.deepEqual(pinned(newer, sameMacos, sameWindows), renamed(execute(newer)));
+  assert.deepEqual(pinned(same, newerMacos, sameWindows), renamed(execute(same, newerMacos)));
 });
 
 test("workflow entrypoints preserve platform selection, quoted inputs and every failure", { skip: process.platform === "win32" }, async (t) => {

@@ -370,7 +370,7 @@ export function finalizeLedger(directory, planned) {
 }
 
 const CLIENTS = ["codex", "opencode", "claude", "codebuddy", "cursor"];
-const CHANNELS = ["baseline", "latest", "baseline+latest"];
+const CHANNELS = ["baseline", "latest", "baseline+latest", "accepted", "baseline+accepted"];
 const RUNNER_LABEL = /^(?:ubuntu|macos|windows)-[0-9a-z.-]{1,16}$/;
 const PASSING = ["PASS", "SKIPPED_BY_DESIGN"];
 
@@ -600,7 +600,7 @@ export function recordInputs(output, options, env = process.env) {
   return record;
 }
 
-const NPM_CLIENTS = { codex: "@openai/codex", opencode: "opencode-ai", claude: "@anthropic-ai/claude-code", codebuddy: "@tencent-ai/codebuddy-code" };
+export const NPM_CLIENTS = { codex: "@openai/codex", opencode: "opencode-ai", claude: "@anthropic-ai/claude-code", codebuddy: "@tencent-ai/codebuddy-code" };
 // CodeBuddy versions are resolved against the public registry explicitly in the workflow.
 const EXPLICIT_REGISTRY = { codebuddy: "https://registry.npmjs.org/" };
 
@@ -639,7 +639,7 @@ export async function recordManifest(output, options, { env = process.env, npm =
       const version = semver(entry?.[name]);
       if (!version) continue;
       const set = channels.get(version) ?? new Set();
-      for (const channel of String(entry.channel).split("+")) if (["baseline", "latest"].includes(channel)) set.add(channel);
+      for (const channel of String(entry.channel).split("+")) if (["baseline", "latest", "accepted"].includes(channel)) set.add(channel);
       channels.set(version, set);
     }
     if (!channels.size) continue;

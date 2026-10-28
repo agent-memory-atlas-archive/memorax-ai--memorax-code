@@ -65,21 +65,24 @@ for (const id of ["workbuddy-releases", "workbuddy-native", "workbuddy-result"])
   });
 }
 
-test("a pull request that does not select WorkBuddy verifies the contracts without asking for releases", () => {
+test("a pull request verifies the contracts and reads only the pinned releases it selects, never the official feeds", () => {
   const releases = job("workbuddy-releases");
   assert.match(releases, /^    needs: scope$/m);
   const steps = releases.split("\n      - ").slice(1);
+  const pinned = steps.find((step) => step.startsWith("name: Read the pinned WorkBuddy acceptance releases for this pull request\n"));
   const resolve = steps.find((step) => step.startsWith("name: Resolve each platform's latest release once\n"));
-  const condition = resolve?.match(/^        if: (.+)$/m)?.[1];
-  assert.ok(condition);
+  const [readsPinned, resolvesLatest] = [pinned, resolve].map((step) => step?.match(/^        if: (.+)$/m)?.[1]);
+  assert.ok(readsPinned && resolvesLatest);
   for (const workbuddy of ["true", "false", ""]) {
-    assert.equal(selected(condition, { event: "pull_request", workbuddy }), workbuddy === "true", `workbuddy=${workbuddy}`);
+    assert.equal(selected(readsPinned, { event: "pull_request", workbuddy }), workbuddy === "true", `workbuddy=${workbuddy}`);
+    assert.equal(selected(resolvesLatest, { event: "pull_request", workbuddy }), false, `workbuddy=${workbuddy}`);
   }
   for (const [event, mode] of [["schedule"], ["workflow_dispatch", "release-acceptance"], ["workflow_dispatch", "workbuddy-download-diagnostic"]]) {
-    assert.equal(selected(condition, { event, mode }), true, `${event}, mode=${mode}`);
+    assert.equal(selected(readsPinned, { event, mode }), false, `${event}, mode=${mode}`);
+    assert.equal(selected(resolvesLatest, { event, mode }), true, `${event}, mode=${mode}`);
   }
   // The parser setup and the contracts run in every run of the job.
-  for (const step of steps.filter((item) => item !== resolve)) assert.doesNotMatch(step, /^        if:/m);
+  for (const step of steps.filter((item) => ![pinned, resolve].includes(item))) assert.doesNotMatch(step, /^        if:/m);
 });
 
 test("WorkBuddy native cells require the validated shared package and the frozen releases", () => {
@@ -92,8 +95,9 @@ test("WorkBuddy native cells require the validated shared package and the frozen
 test("WorkBuddy consumes the shared candidate package and keeps one aggregate result", () => {
   const releases = job("workbuddy-releases");
   assert.doesNotMatch(releases, /npm-package-check|upload-artifact/);
-  assert.match(releases, /^      matrix: \$\{\{ steps\.releases\.outputs\.matrix \}\}$/m);
-  assert.match(releases, /^      coverage: \$\{\{ steps\.releases\.outputs\.coverage \}\}$/m);
+  assert.match(releases, /^      matrix: \$\{\{ steps\.accepted\.outputs\.matrix \|\| steps\.releases\.outputs\.matrix \}\}$/m);
+  assert.match(releases, /^      coverage: \$\{\{ steps\.accepted\.outputs\.coverage \|\| steps\.releases\.outputs\.coverage \}\}$/m);
+  assert.match(releases, /^        run: node scripts\/ci\/codebuddy-workbuddy\/workbuddy-release-matrix\.mjs accepted$/m);
   assert.match(releases, /^        run: node scripts\/ci\/codebuddy-workbuddy\/workbuddy-release-matrix\.mjs resolve$/m);
   assert.match(releases, /^        run: node --test scripts\/ci\/codebuddy-workbuddy\/codebuddy-\*\.test\.mjs scripts\/ci\/codebuddy-workbuddy\/workbuddy-\*\.test\.mjs$/m);
   assert.match(job("workbuddy-native"), /^    needs: \[scope, package, workbuddy-releases\]$/m);
@@ -172,19 +176,22 @@ test("each WorkBuddy cell records its verified versions, hashes and run attempt 
     .split("\n").map((line) => line.slice(10)).join("\n");
   assert.ok(script);
   const release = { ...baselineRelease("linux-x64-deb"), channel: "latest", runtimeVersion: null };
-  // Linux keeps a differing download with a warning; the report records both hashes and the status.
-  for (const [actual, status] of [[release.sha256.toUpperCase(), "match"], ["e".repeat(64), "warning"]]) {
+  // Linux keeps a differing download with a warning, but an accepted release must match the hash its acceptance recorded;
+  // the report records both hashes and the status either way.
+  for (const [channel, actual, status] of [["latest", release.sha256.toUpperCase(), "match"], ["latest", "e".repeat(64), "warning"],
+    ["accepted", release.sha256, "match"], ["accepted", "e".repeat(64), "mismatch"]]) {
     const root = await realpath(await mkdtemp(join(tmpdir(), "workbuddy-report-")));
     try {
       await writeFile(join(root, "workbuddy-bundle.json"), JSON.stringify({ desktopVersion: "5.7.0.40000000", runtimeVersion: "2.160.1",
         arch: "x64", command: "extracted/opt/WorkBuddy/cli/bin/codebuddy", file: "WorkBuddy.deb", sha256: actual }));
-      await writeFile(join(root, "workbuddy-release.json"), JSON.stringify(release));
+      await writeFile(join(root, "workbuddy-release.json"), JSON.stringify({ ...release, channel }));
       const result = spawnSync(process.execPath, ["--input-type=module", "-"], { input: script, cwd: root, encoding: "utf8", timeout: 5_000,
         env: { RUNNER_TEMP: root, HOME: root, GITHUB_RUN_ID: "39203658997", GITHUB_RUN_ATTEMPT: "2",
-          WORKBUDDY_OS: "ubuntu-24.04", WORKBUDDY_NODE: "24", WORKBUDDY_CHANNEL: "latest" } });
-      assert.equal(result.status, 0, result.stderr);
+          WORKBUDDY_OS: "ubuntu-24.04", WORKBUDDY_NODE: "24", WORKBUDDY_CHANNEL: channel } });
+      assert.equal(result.status, status === "mismatch" ? 1 : 0, result.stderr);
+      if (status === "mismatch") assert.match(result.stderr, /WORKBUDDY_ACCEPTED_HASH_MISMATCH/);
       assert.deepEqual(JSON.parse(await readFile(join(root, "workbuddy-report", "report.json"), "utf8")), { schemaVersion: 2,
-        runId: "39203658997", runAttempt: 2, os: "ubuntu-24.04", node: "24", channel: "latest", desktopVersion: "5.7.0.40000000",
+        runId: "39203658997", runAttempt: 2, os: "ubuntu-24.04", node: "24", channel, desktopVersion: "5.7.0.40000000",
         runtimeVersion: "2.160.1", arch: "x64", source: new URL(release.url).host,
         sha256: { reference: release.sha256, actual: actual.toLowerCase(), status } });
     } finally {

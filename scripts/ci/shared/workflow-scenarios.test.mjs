@@ -328,13 +328,15 @@ test("concurrency cancels only an older run of the same purpose and never a rele
   assert.notEqual(caller, callee);
 });
 
-// Package job steps that ask npm or a desktop release feed for the latest client versions, or keep that answer, and
-// the package output through which client jobs consume each.
-const LOOKUPS = new Map([["codex-versions", "codex-matrix"], ["opencode-versions", "opencode-matrix"],
-  ["claude-versions", "claude-matrix"], ["codebuddy-versions", "codebuddy-matrix"], ["cursor-versions", "cursor-matrix"],
-  ["cursor-app-releases-attempt${{ github.run_attempt }}", "cursor-releases-artifact-name"]]);
+// The package output through which client jobs consume each client's versions, and the package job steps that produce it:
+// one reads the pinned acceptance versions for a pull request, the other asks npm or a desktop release feed for the latest
+// versions. The Cursor release inventory either step freezes is kept as an artifact.
+const LOOKUPS = new Map([["codex-matrix", ["codex-accepted", "codex-versions"]],
+  ["opencode-matrix", ["opencode-accepted", "opencode-versions"]], ["claude-matrix", ["claude-accepted", "claude-versions"]],
+  ["codebuddy-matrix", ["codebuddy-accepted", "codebuddy-versions"]], ["cursor-matrix", ["cursor-accepted", "cursor-versions"]],
+  ["cursor-releases-artifact-name", ["cursor-app-releases-attempt${{ github.run_attempt }}"]]]);
 
-test("the package job asks for upstream versions only when a job consumes them and always checks the package", () => {
+test("the package job reads client versions only when a job consumes them, pinned for a pull request, and always checks the package", () => {
   const native = jobs(workflows.native);
   const text = native.find((job) => job.id === "package").text;
   const outputs = Object.fromEntries([...text.split("\n    outputs:\n")[1].split("\n    steps:\n")[0]
@@ -346,25 +348,33 @@ test("the package job asks for upstream versions only when a job consumes them a
   // Every executed step succeeds, as in plan(), and on a pull request reads the scope's selection.
   const runs = (step, scenario, planned = new Map()) => Boolean(evaluate(step.condition ?? "success()", {
     ...context(scenario, needsOf(planned)), success: () => true, steps: { "package-check": { outputs: { "artifact-ready": "true" } } } }));
-  const requests = steps.filter((step) => /\bnpm view |cursor-app-release\.mjs resolve-/.test(step.text)).map((step) => step.key);
-  assert.equal(requests.length, 5);
-  for (const key of requests) assert.ok(LOOKUPS.has(key), key);
+  const requests = steps.filter((step) => /\bnpm view |dist-tags|cursor-app-release\.mjs resolve-/.test(step.text)).map((step) => step.key);
+  assert.deepEqual(requests, ["codex-versions", "opencode-versions", "claude-versions", "codebuddy-versions", "cursor-versions"]);
+  const pinned = steps.filter((step) => /client-acceptance\.mjs npm-matrix |cursor-app-release\.mjs accepted /.test(step.text))
+    .map((step) => step.key);
+  assert.deepEqual(pinned, ["codex-accepted", "opencode-accepted", "claude-accepted", "codebuddy-accepted", "cursor-accepted"]);
   const plans = SCENARIOS.native.map(([label, scenario]) => [label, scenario, plan(workflows.native, scenario)]);
-  for (const [key, output] of LOOKUPS) {
-    const step = steps.find((item) => item.key === key);
-    assert.ok(step, key);
-    assert.ok(outputs[output] === key || outputs[output] === `\${{ steps.${key}.outputs.matrix }}`, output);
+  for (const [output, keys] of LOOKUPS) {
+    const selected = keys.map((key) => steps.find((item) => item.key === key));
+    assert.ok(selected.every(Boolean), output);
+    assert.equal(outputs[output], keys.length === 1 ? keys[0] : `\${{ ${keys.map((key) => `steps.${key}.outputs.matrix`).join(" || ")} }}`, output);
     const consumers = native.filter((job) => job.text.includes(`needs.package.outputs.${output}`)).map((job) => job.id);
     assert.ok(consumers.length, output);
     for (const [label, scenario, planned] of plans) {
-      assert.equal(planned.get("package").runs && runs(step, scenario, planned), consumers.some((id) => planned.get(id).runs), `${label}: ${key}`);
+      const ran = selected.map((step) => planned.get("package").runs && runs(step, scenario, planned));
+      assert.equal(ran.some(Boolean), consumers.some((id) => planned.get(id).runs), `${label}: ${output}`);
+      // A pull request reads only the pinned versions and every other run only the latest ones, never both.
+      if (keys.length === 2 && ran.some(Boolean)) {
+        assert.deepEqual(ran, [scenario.event === "pull_request", scenario.event !== "pull_request"], `${label}: ${output}`);
+      }
     }
   }
-  // A main push, and a pull request that selects no client, skip only these lookups: they still verify the contracts,
+  // A main push, and a pull request that selects no client, skip only these steps: they still verify the contracts,
   // build and check the package, and upload it with its identity record.
+  const lookups = [...LOOKUPS.values()].flat();
   for (const scenario of [push, pullRequest(9, false, [])]) {
     assert.deepEqual(steps.filter((step) => runs(step, scenario, plan(workflows.native, scenario))).map((step) => step.key),
-      steps.map((step) => step.key).filter((key) => !LOOKUPS.has(key)), scenario.event);
+      steps.map((step) => step.key).filter((key) => !lookups.includes(key)), scenario.event);
   }
   // Only the identity record and its upload may fail without failing the package job.
   assert.deepEqual(steps.filter((step) => /^        continue-on-error: true$/m.test(step.text)).map((step) => step.key),
@@ -450,8 +460,9 @@ test("the scope job selects clients only for a pull request, from its merge comm
   assert.deepEqual([...new Set(gates)].sort(), [...CLIENTS].sort());
 });
 
-test("the Tests job runs these workflow contracts and the scope selection tests", () => {
+test("the Tests job runs these workflow contracts, the scope selection and the pinned acceptance manifest tests", () => {
   const tests = jobs(workflows.ci).find((job) => job.id === "tests").text;
   assert.match(tests, /^        run: node --test scripts\/ci\/shared\/workflow-scenarios\.test\.mjs$/m);
   assert.match(tests, /^        run: node --test scripts\/ci\/shared\/native-scope\.test\.mjs$/m);
+  assert.match(tests, /^        run: node --test scripts\/ci\/shared\/client-acceptance\.test\.mjs$/m);
 });
